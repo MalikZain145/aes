@@ -79,6 +79,11 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   // Assignments became term-scoped — rebuild indexes so the old unique index
   // (type,department,program,batch) is replaced by (type,term,department,program,batch).
   try { await require('./models/Assignment').syncIndexes(); } catch (e) { console.warn('Assignment index sync:', e.message); }
+  // First-run bootstrap: on a brand-new database (e.g. a fresh Atlas cluster in
+  // production) there are no login accounts, so seed the staff accounts once. This
+  // makes a fresh deploy usable immediately — data is then imported in-app. Existing
+  // databases are untouched (it only runs when NO admin exists).
+  try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
   // Bind to 0.0.0.0 so phones on the same WiFi (the QR scanner app) can reach it,
   // not just localhost.
   app.listen(PORT, '0.0.0.0', () => {
@@ -100,6 +105,25 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
     console.log('');
   });
 })();
+
+// Seed the staff login accounts on a fresh database only (no admin yet). The admin
+// username/password come from env when provided, else the project defaults — matching
+// scripts/seed.js so local and deployed credentials stay the same.
+async function seedStaffIfEmpty() {
+  const User = require('./models/User');
+  if (await User.exists({ role: 'admin' })) return;   // already set up — leave as-is
+  const accounts = [
+    { role: 'admin',   username: process.env.ADMIN_USERNAME || 'examcell.abasynisb.edu.pk', password: process.env.ADMIN_PASSWORD || 'admin123', name: 'Exam Cell',      email: 'examcell@abasynisb.edu.pk' },
+    { role: 'finance', username: 'finance@abasynisb.edu.pk', password: 'finance123', name: 'Finance Office', email: 'finance@abasynisb.edu.pk' },
+    { role: 'faculty', username: 'faculty@abasynisb.edu.pk', password: 'faculty123', name: 'Faculty',        email: 'faculty@abasynisb.edu.pk' },
+  ];
+  for (const a of accounts) {
+    const u = new User({ role: a.role, username: a.username, name: a.name, email: a.email });
+    await u.setPassword(a.password);
+    await u.save();
+  }
+  console.log(`✓ Seeded ${accounts.length} staff accounts on fresh DB (admin: "${accounts[0].username}")`);
+}
 
 // On Windows, the phone can only reach the server if the firewall lets port 5000
 // in. A *new* WiFi is treated as a "Public" network where inbound is blocked by
