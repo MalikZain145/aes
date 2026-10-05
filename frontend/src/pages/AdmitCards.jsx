@@ -1,0 +1,609 @@
+import { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Contact, FileText, Download, Loader2, Sparkles, CheckCircle2,
+  CalendarClock, Upload, FileSpreadsheet, AlertCircle, DoorOpen, Armchair, Building2,
+  ClipboardList, UserCheck, LayoutGrid, Clock, Search,
+} from 'lucide-react';
+
+/* Every exam document produced in one run — admit cards PLUS the seating plan,
+   identification sheets and invigilation roster (all shown as separate downloads). */
+const examSheets = (files) => (files || []);
+
+/* Map a generated file to a friendly document identity (icon + name + tone). */
+function docMeta(label = '') {
+  const l = label.toLowerCase();
+  if (l.includes('seating')) return { icon: LayoutGrid, name: 'Seating Plan', tone: 'blue' };
+  if (l.includes('identif')) return { icon: ClipboardList, name: 'Identification Sheets', tone: 'green' };
+  if (l.includes('invigil')) return { icon: UserCheck, name: 'Invigilation Roster', tone: 'purple' };
+  return { icon: Contact, name: 'Admit Cards', tone: 'brass' };
+}
+import { Link } from 'react-router-dom';
+import api, { errMsg } from '../api/client';
+import { useToast } from '../context/ToastContext';
+import { PageHeader } from '../components/ui';
+import { downloadFile } from '../api/download';
+import './generate.css';
+import './datesheet.css';
+
+export default function AdmitCards() {
+  const toast = useToast();
+
+  // ── inputs ──
+  const [datesheets, setDatesheets] = useState([]);
+  const [datesheetId, setDatesheetId] = useState('');
+  const [selectedDsIds, setSelectedDsIds] = useState([]);   // multi-select: card across all chosen datesheets
+  const [level, setLevel] = useState('bs');   // bs | btech | pg — cards made per cohort
+  const [uploadFile, setUploadFile] = useState(null);
+  const [campusLine, setCampusLine] = useState('Abasyn University Islamabad Campus');
+  const [includeLabs, setIncludeLabs] = useState(false);
+
+  const [venueInfo, setVenueInfo] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [result, setResult] = useState(null);
+  const [resultRecord, setResultRecord] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  // ── single-student admit card (search by reg number) ──
+  const [cardReg, setCardReg] = useState('');
+  const [cardResult, setCardResult] = useState(null);   // { found, reg, name, ... } | { found:false }
+  const [cardBusy, setCardBusy] = useState(false);
+
+  const searchCard = async () => {
+    const reg = cardReg.trim();
+    if (!reg) return;
+    setCardBusy(true); setCardResult(null);
+    try {
+      const res = await api.get('/generate/admit-card/find', { params: { reg } });
+      setCardResult(res.data);
+    } catch (err) { toast.error(errMsg(err, 'Search failed.')); }
+    finally { setCardBusy(false); }
+  };
+  // Mark THIS student's fee Paid / Unpaid — releases or holds their admit card on
+  // the portal, for email and for printing. Same effect as the fee-paid list.
+  const setFee = async (paid) => {
+    const reg = (cardResult && cardResult.reg) || cardReg.trim();
+    if (!reg) return;
+    setCardBusy(true);
+    try {
+      const res = await api.post('/finance/fee', { reg, paid });
+      setCardResult((c) => c ? { ...c, feeStatus: res.data.feeStatus, feePaid: res.data.feePaid, canPrint: !!(c.cardPage && res.data.feePaid) } : c);
+      toast.success(`Fee marked ${res.data.feeStatus} — card ${paid ? 'released on the portal' : 'held'}.`);
+    } catch (err) { toast.error(errMsg(err, 'Could not update fee status.')); }
+    finally { setCardBusy(false); }
+  };
+  const getCardBlob = async (reg) => {
+    const res = await api.get('/generate/admit-card/pdf', { params: { reg }, responseType: 'blob' });
+    return new Blob([res.data], { type: 'application/pdf' });
+  };
+  const printCard = async () => {
+    const reg = (cardResult && cardResult.reg) || cardReg.trim();
+    if (!reg) return;
+    setCardBusy(true);
+    try {
+      const url = URL.createObjectURL(await getCardBlob(reg));
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+      iframe.src = url;
+      iframe.onload = () => { try { iframe.contentWindow.focus(); iframe.contentWindow.print(); } catch { window.open(url, '_blank'); } };
+      document.body.appendChild(iframe);
+      setTimeout(() => { URL.revokeObjectURL(url); iframe.remove(); }, 60000);
+    } catch (err) { toast.error(errMsg(err, 'Could not open the admit card.')); }
+    finally { setCardBusy(false); }
+  };
+  const saveCard = async () => {
+    const reg = (cardResult && cardResult.reg) || cardReg.trim();
+    if (!reg) return;
+    setCardBusy(true);
+    try {
+      const url = URL.createObjectURL(await getCardBlob(reg));
+      const a = document.createElement('a'); a.href = url; a.download = `AdmitCard_${reg}.pdf`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (err) { toast.error(errMsg(err, 'Could not download the admit card.')); }
+    finally { setCardBusy(false); }
+  };
+
+  const loadDatesheets = async () => {
+    try {
+      const res = await api.get('/generate/files', { params: { kind: 'datesheet' } });
+      const items = res.data.items || [];
+      setDatesheets(items);
+      if (items.length && !datesheetId) setDatesheetId(items[0]._id); // latest
+      // Pre-selection by level is handled by the level effect.
+    } catch { /* ignore */ }
+  };
+  const loadHistory = async () => {
+    try {
+      const res = await api.get('/generate/files', { params: { kind: 'admit_cards' } });
+      setHistory(res.data.items || []);
+    } catch { /* ignore */ }
+  };
+  const loadVenues = async () => {
+    try {
+      const res = await api.get('/rooms-labs/count');
+      setVenueInfo({ rooms: res.data?.rooms ?? 0, labs: res.data?.labs ?? 0 });
+    } catch { /* ignore */ }
+  };
+  useEffect(() => { loadDatesheets(); loadHistory(); loadVenues(); }, []); // eslint-disable-line
+
+  // A datesheet's cohort: pg (MS), btech (B.Tech / Engineering Technology), or bs.
+  const dsCohort = (d) => {
+    const s = `${d?.meta?.programLevel || ''} ${d?.title || ''}`.toLowerCase();
+    if (/post|mphil|\bms\b|master/.test(s)) return 'pg';
+    if (/b\.?\s*tech|engineering tech|\btech\b/.test(s)) return 'btech';
+    return 'bs';
+  };
+  const visibleDatesheets = useMemo(
+    () => datesheets.filter((d) => dsCohort(d) === level),
+    [datesheets, level]
+  );
+
+  // Admit cards are issued for ALL programs in one run, so all three datesheets
+  // (BS, B.Tech, MS) must exist first. This gates the Generate button.
+  const COHORT_LABEL = { bs: 'BS', btech: 'B.Tech', pg: 'MS' };
+  // The LATEST datesheet per program (newest wins — the backend replaces the old
+  // one when a program's datesheet is regenerated, so there is only ever one).
+  const latestByCohort = useMemo(() => {
+    const by = { bs: null, btech: null, pg: null };
+    for (const d of datesheets) {
+      const c = dsCohort(d);
+      if (!by[c] || new Date(d.createdAt) > new Date(by[c].createdAt)) by[c] = d;
+    }
+    return by;
+  }, [datesheets]);
+  const missingCohorts = ['bs', 'btech', 'pg'].filter((c) => !latestByCohort[c]);
+  const canGenerate = missingCohorts.length === 0;
+
+  // When the BS/B.Tech/MS switch changes, pre-tick that cohort's datesheets (of
+  // the newest exam+term). B.Tech students also sit shared gen-ed (BS) papers, so
+  // the BS datesheets of the same exam are auto-included at generation time.
+  useEffect(() => {
+    const vis = datesheets.filter((d) => dsCohort(d) === level);
+    if (!vis.length) { setSelectedDsIds([]); return; }
+    const top = vis[0];
+    const sameExam = vis.filter((d) => d.examType === top.examType
+      && (d.meta?.semester || '') === (top.meta?.semester || '')
+      && (d.meta?.year || '') === (top.meta?.year || ''));
+    setSelectedDsIds(sameExam.map((d) => d._id));
+  }, [level, datesheets]); // eslint-disable-line
+
+  const selected = useMemo(
+    () => datesheets.find((d) => d._id === datesheetId) || null,
+    [datesheets, datesheetId]
+  );
+
+  const dsLabel = (d) => {
+    const exam = d?.examType === 'mids' ? 'Mid Term' : 'Final Term';
+    const sem = d?.meta?.semester || '';
+    const yr = d?.meta?.year || '';
+    const range = d?.meta?.startDate ? ` (${d.meta.startDate} → ${d.meta.endDate})` : '';
+    return `${exam} · ${sem} ${yr}${range}`.replace(/\s+/g, ' ').trim();
+  };
+
+  const validate = () => {
+    if (!selectedDsIds.length) { toast.error('Tick at least one datesheet for these admit cards.'); return false; }
+    // Registration file is OPTIONAL — without it, cards build from the database.
+    if (venueInfo && venueInfo.rooms === 0 && venueInfo.labs === 0) {
+      toast.error('No rooms or labs in the database. Add exam venues under Rooms & Labs first.'); return false;
+    }
+    return true;
+  };
+
+  const generate = async () => {
+    if (!validate()) return;
+    setGenerating(true);
+    setResult(null);
+    setProgress(0);
+    setTotal(0);
+
+    // A unique token lets us poll real per-card progress while the (long)
+    // generate request is still in flight.
+    const token = (window.crypto?.randomUUID?.() || `t${Date.now()}${Math.random()}`)
+      .replace(/[^a-zA-Z0-9-]/g, '');
+    const poll = setInterval(async () => {
+      try {
+        const p = await api.get(`/generate/admit-cards/progress/${token}`);
+        if (typeof p.data.done === 'number') setProgress((prev) => Math.max(prev, p.data.done));
+        if (p.data.total) setTotal(p.data.total);
+      } catch { /* ignore */ }
+    }, 350);
+
+    try {
+      // Cards are issued for the SELECTED cohort only (separate BS / B.Tech / MS
+      // batches), but we ALWAYS send EVERY cohort's datesheet of this exam/term so
+      // the backend seats ALL programs together in one deterministic global pass.
+      // That is what makes shared-slot seating conflict-free and anti-cheating-safe
+      // no matter which cohort is generated first — never a double-booked seat.
+      // The 3 latest datesheets — one per program (BS + B.Tech + MS). The backend
+      // seats all of them together and issues every student's card in one batch.
+      const idList = ['bs', 'btech', 'pg'].map((c) => latestByCohort[c]).filter(Boolean).map((d) => d._id);
+
+      const form = new FormData();
+      if (uploadFile) form.append('dataset', uploadFile);   // optional — else DB is used
+      form.append('datesheetIds', JSON.stringify(idList));
+      form.append('cohort', 'all');   // ONE click → every program's cards, one unified batch
+      form.append('campusLine', campusLine);
+      form.append('includeLabs', includeLabs ? 'true' : 'false');
+      form.append('progressToken', token);
+      const res = await api.post('/generate/admit-cards', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 90 * 60 * 1000,   // 5,000–10,000 cards can take a while; don't abort early
+      });
+      setProgress(res.data.result.admit_cards);
+      setTotal(res.data.result.admit_cards);
+      setResult(res.data.result);
+      setResultRecord(res.data.record || null);
+      toast.success(`${res.data.result.admit_cards} admit cards generated.`);
+      loadHistory();
+    } catch (err) {
+      toast.error(errMsg(err, 'Admit-card generation failed.'));
+    } finally {
+      clearInterval(poll);
+      setGenerating(false);
+    }
+  };
+
+  const download = async (record, file) => {
+    setBusy(true);
+    try {
+      await downloadFile(`/generate/files/${record._id}/download/${encodeURIComponent(file.filename)}`, file.filename);
+    } catch (err) {
+      toast.error(errMsg(err, 'Download failed.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <PageHeader
+        eyebrow="Generate"
+        title="Admit Cards"
+        subtitle="Per-student admit cards with an automatic, anti-cheating seating plan — built straight from a datesheet you already generated. Dates, times, semester and teachers all come from your data."
+      />
+
+      {/* how it works banner */}
+      <div className="ac-how card">
+        <div className="ac-how-item"><Contact size={16} /> <span>One card per student per page — every paper with date, time, teacher, room &amp; seat, read from the datesheet.</span></div>
+        <div className="ac-how-item"><Armchair size={16} /> <span>2 students per bench — different degree, or different batch <b>and</b> paper. Never the same paper.</span></div>
+        <div className="ac-how-item"><ClipboardList size={16} /> <span>One generation produces the full exam pack: <b>Admit Cards</b>, <b>Seating Plan</b>, <b>Identification Sheets</b> (attendance list per room &amp; course) and the <b>Invigilation Roster</b> — seats &amp; times match the admit card exactly.</span></div>
+      </div>
+
+      {datesheets.length === 0 ? (
+        <div className="card" style={{ padding: 24 }}>
+          <div className="ds-clash-warn" style={{ margin: 0 }}>
+            <AlertCircle size={16} />
+            <span>
+              No datesheet found. Admit cards are built from a datesheet — please{' '}
+              <Link to="/datesheets" style={{ fontWeight: 700, textDecoration: 'underline' }}>generate a datesheet</Link>{' '}
+              first, then come back here.
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="ds-grid">
+          {/* ── Configuration ── */}
+          <motion.div className="ds-config card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
+            {/* One click issues admit cards for EVERY program together (BS + B.Tech
+                + MS) in a single unified batch — seating considers all programs, so
+                shared-slot papers never clash. Every datesheet of the exam/term is
+                covered automatically; the list below is just what will be included. */}
+            <label className="ds-label">Datesheets covered <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· all programs, one click</span></label>
+            <p className="ds-source-note" style={{ marginTop: 0 }}>
+              <CalendarClock size={13} /> Cards are generated for all three programs at once — every BS, B.Tech and MS datesheet of this exam is included, and each student gets their own card by registration number (shown on the portal per the fee-paid list).
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, border: '1px solid var(--border)', borderRadius: 10, padding: 10 }}>
+              {['bs', 'btech', 'pg'].map((c) => {
+                const d = latestByCohort[c];
+                return (
+                  <div key={c} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13 }}>
+                    <span style={{ minWidth: 62, fontWeight: 800 }}>{COHORT_LABEL[c]}</span>
+                    {d ? (
+                      <>
+                        <CheckCircle2 size={15} style={{ color: '#198754', flexShrink: 0 }} />
+                        <span style={{ flex: 1 }}>
+                          {d.title}
+                          <span style={{ color: 'var(--text-faint)' }}> · {d.summary?.courses ?? '—'} papers · {d.examType === 'mids' ? 'Mid-Term' : 'Final-Term'} · {new Date(d.createdAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}</span>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle size={15} style={{ color: '#c53030', flexShrink: 0 }} />
+                        <span style={{ flex: 1, color: '#c53030' }}>Not generated yet — create this program's datesheet.</span>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Student file (OPTIONAL — DB is used by default) */}
+            <label className="ds-label">Student registration file <span className="ds-source-note" style={{ fontWeight: 500 }}>optional</span></label>
+            <div className="ds-upload">
+              <label className="ds-upload-drop">
+                <input type="file" accept=".xlsx,.xls" hidden
+                  onChange={(e) => setUploadFile(e.target.files?.[0] || null)} />
+                {uploadFile ? (
+                  <><FileSpreadsheet size={18} /> <span>{uploadFile.name}</span></>
+                ) : (
+                  <><Upload size={18} /> <span>Uses the imported database — attach a file only to override</span></>
+                )}
+              </label>
+              <p className="ds-source-note">
+                <CheckCircle2 size={13} /> Students, rooms, labs and teachers all come from your database (Import Data).
+                Attach a file only if you want to build from a one-off list instead. Set each venue's
+                <b> exam capacity</b> under Rooms &amp; Labs.
+              </p>
+            </div>
+
+            {/* Campus line */}
+            <label className="ds-label">Header (top-centre of the card)</label>
+            <input className="input" type="text" value={campusLine}
+              onChange={(e) => setCampusLine(e.target.value)} placeholder="Abasyn University Islamabad Campus" />
+
+            <label className="ac-check">
+              <input type="checkbox" checked={includeLabs} onChange={(e) => setIncludeLabs(e.target.checked)} />
+              <span>Use labs as exam venues too (in addition to theory rooms)</span>
+            </label>
+
+            {!canGenerate && (
+              <div className="ac-gate" style={{ margin: '10px 0', padding: '10px 12px', borderRadius: 10, background: 'var(--warn-bg, #fff4e5)', color: 'var(--warn-fg, #8a5a00)', fontSize: 13, border: '1px solid var(--border)' }}>
+                Admit cards are generated for <b>all programs together</b>. Generate the{' '}
+                <b>{missingCohorts.map((c) => COHORT_LABEL[c]).join(', ')}</b> datesheet{missingCohorts.length > 1 ? 's' : ''} first —
+                then one click issues every student’s admit card.
+              </div>
+            )}
+            <button className="btn btn-brass ds-generate" onClick={generate} disabled={generating || !canGenerate}>
+              {generating ? <><Loader2 size={17} className="spin" /> Generating…</> : <><Sparkles size={17} /> Generate admit cards — all programs</>}
+            </button>
+
+            {generating && (
+              <div className="ac-counter">
+                <span className="ac-counter-num">
+                  {progress.toLocaleString()}{total ? ` / ${total.toLocaleString()}` : ''}
+                </span>
+                <span className="ac-counter-lbl">
+                  {total ? 'admit cards prepared' : 'setting up…'}
+                </span>
+              </div>
+            )}
+          </motion.div>
+
+          {/* ── Preview + result ── */}
+          <div className="ds-side">
+            <motion.div className="ds-preview card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.05 }}>
+              <div className="ds-preview-head"><FileText size={16} /> Live preview</div>
+              <div className="ds-preview-row">
+                <span className="ds-preview-k">Card header</span>
+                <span className="ds-preview-v">{campusLine}</span>
+              </div>
+              <div className="ds-preview-row">
+                <span className="ds-preview-k">Sub-heading</span>
+                <span className="ds-preview-v">{selected?.meta?.heading || '—'}</span>
+              </div>
+              <div className="ds-preview-row">
+                <span className="ds-preview-k">Venues in DB</span>
+                <span className="ds-preview-v">
+                  {venueInfo ? <><Building2 size={12} /> {venueInfo.rooms} rooms · <DoorOpen size={12} /> {venueInfo.labs} labs</> : '—'}
+                </span>
+              </div>
+              <p className="ds-preview-note">Semester, year, dates and times all come from the selected datesheet — nothing is entered twice.</p>
+            </motion.div>
+
+            <AnimatePresence>
+              {result && (
+                <motion.div className="ds-result card" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                  <div className="ds-result-head"><CheckCircle2 size={20} /> Generated</div>
+                  <div className="ds-result-grid">
+                    <div><b>{result.admit_cards}</b><span>admit cards</span></div>
+                    <div><b>{result.sessions}</b><span>sessions</span></div>
+                    <div><b>{result.total_days}</b><span>exam days</span></div>
+                    <div><b>{result.venues}</b><span>venues</span></div>
+                  </div>
+                  <div className="ds-result-range">{result.start_date} → {result.end_date}</div>
+
+                  {resultRecord && examSheets(resultRecord.files).length > 0 && (
+                    <div className="ac-docs">
+                      <div className="ac-docs-head"><FileText size={14} /> Exam documents — ready to download</div>
+                      <div className="ac-docs-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                        {examSheets(resultRecord.files).map((f) => {
+                          const m = docMeta(f.label); const Icon = m.icon;
+                          return (
+                            <button key={f.filename} className={`ac-doc tone-${m.tone}`} onClick={() => download(resultRecord, f)} disabled={busy}>
+                              <span className="ac-doc-ic"><Icon size={20} /></span>
+                              <span className="ac-doc-txt">
+                                <span className="ac-doc-name">{m.name}</span>
+                                <span className="ac-doc-dl"><Download size={12} /> PDF</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {result.clash_count > 0 && (
+                    <div className="ds-clash-warn">
+                      <AlertCircle size={15} />
+                      <span>
+                        <b>{result.clash_count} paper clash(es)</b> — a student has two papers in the same date &amp; slot
+                        (different datesheets scheduled them together). Fix the datesheet(s) so no shared student has two
+                        papers at once, then re-generate. Sample: {(result.clashes || []).slice(0, 3).map((c) => `${c.sid} ${c.courses.join('+')} @ ${c.date} ${c.slot}`).join('; ')}
+                      </span>
+                    </div>
+                  )}
+
+                  {result.seats_short > 0 ? (
+                    <div className="ds-clash-warn">
+                      <AlertCircle size={15} />
+                      <span>
+                        <b>{result.seats_short} seat(s) short</b> at the busiest session ({result.peak_session_students} students
+                        vs {result.venue_seat_capacity} seats). Add venues or raise exam capacities under Rooms &amp; Labs.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="ds-clashfree">
+                      <CheckCircle2 size={14} /> Everyone seated — peak session {result.peak_session_students} of {result.venue_seat_capacity} seats.
+                    </div>
+                  )}
+
+                  {result.audit && (
+                    result.audit.clean ? (
+                      <p className="ds-source-note"><CheckCircle2 size={13} /> Independent audit CLEAN — 0 clashes, 0 double-booked seats, no bench with the same paper, no teacher invigilating their own paper.</p>
+                    ) : (
+                      <div className="ds-merge-info" style={{ borderColor: '#b02a37' }}>
+                        <AlertCircle size={15} />
+                        <span>
+                          <b>Audit found violations — do not release these cards yet:</b>{' '}
+                          {Object.entries(result.audit.hard_counts || {}).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`).join(' · ')}
+                        </span>
+                      </div>
+                    )
+                  )}
+                  {result.solo_benches > 0 && (
+                    <div className="ds-merge-info">
+                      <Armchair size={15} />
+                      <span>
+                        <b>{result.solo_benches} bench(es)</b> seat a single student — no compatible partner was available
+                        without breaking the anti-cheating rule (usually a large common-course cohort). The rule was never broken.
+                      </span>
+                    </div>
+                  )}
+                  {result.students_no_paper > 0 && (
+                    <p className="ds-source-note"><CheckCircle2 size={13} /> {result.students_no_paper} student(s) had only non-exam courses (e.g. internship / FYP) — no card produced.</p>
+                  )}
+
+                  <div className="ac-constraints">
+                    <div className="ac-constraints-title">Constraints followed</div>
+                    <ul>
+                      <li><CheckCircle2 size={14} /> No student has two papers at the same time — fully clash-free.</li>
+                      <li><CheckCircle2 size={14} /> Two students per bench, and never the same paper on one bench.</li>
+                      <li><CheckCircle2 size={14} /> Bench-mates are a different degree, or a different batch <b>and</b> course.</li>
+                      <li><CheckCircle2 size={14} /> Room &amp; lab exam capacity respected — {result.peak_session_students} of {result.venue_seat_capacity} seats at the busiest session.</li>
+                      <li><CheckCircle2 size={14} /> Common-course students sit the paper in the same session (same day &amp; time).</li>
+                      <li><CheckCircle2 size={14} /> One card per student per page, computer-generated (no signature needed).</li>
+                    </ul>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      )}
+
+      {/* ── History ── */}
+      {history.length > 0 && (
+        <div className="ds-history">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <h3 className="font-display ds-history-title" style={{ margin: 0, flex: 1 }}>Recent admit cards</h3>
+            {/* search a single student's card by reg number */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input className="input" style={{ width: 190, height: 36 }} placeholder="Reg. no — find one card"
+                value={cardReg}
+                onChange={(e) => setCardReg(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') searchCard(); }} />
+              <button className="btn btn-primary btn-sm" onClick={searchCard} disabled={cardBusy || !cardReg.trim()}>
+                {cardBusy ? <Loader2 size={14} className="spin" /> : <Search size={14} />} Find
+              </button>
+            </div>
+          </div>
+
+          {cardResult && (
+            cardResult.found ? (
+              <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', marginBottom: 14, flexWrap: 'wrap', border: `1px solid ${cardResult.feePaid ? '#c9e9d6' : '#f5c9c9'}`, background: cardResult.feePaid ? '#e7f5ec' : '#fdf1f1' }}>
+                <UserCheck size={20} style={{ color: cardResult.feePaid ? '#198754' : '#c53030' }} />
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {cardResult.name || 'Student'} <span style={{ color: 'var(--text-faint)', fontWeight: 600 }}>· {cardResult.reg}</span>
+                    <span style={{
+                      fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 999,
+                      background: cardResult.feePaid ? '#d1e7dd' : '#f8d7da', color: cardResult.feePaid ? '#0f5132' : '#842029',
+                    }}>● Fee: {cardResult.feePaid ? 'Paid' : 'Unpaid'}</span>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--text-faint)' }}>{cardResult.program} {cardResult.batch ? `· ${cardResult.batch}` : ''} · {cardResult.papers} paper(s)</div>
+                </div>
+
+                {/* Fee toggle — the individual counterpart of the fee-paid list */}
+                <div style={{ display: 'inline-flex', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                  <button type="button" onClick={() => setFee(true)} disabled={cardBusy || cardResult.feePaid}
+                    className={`btn btn-sm ${cardResult.feePaid ? 'btn-primary' : 'btn-ghost'}`} style={{ borderRadius: 0 }} title="Mark fee paid — release card">
+                    <CheckCircle2 size={14} /> Paid
+                  </button>
+                  <button type="button" onClick={() => setFee(false)} disabled={cardBusy || !cardResult.feePaid}
+                    className={`btn btn-sm ${!cardResult.feePaid ? 'btn-danger' : 'btn-ghost'}`} style={{ borderRadius: 0 }} title="Mark fee unpaid — hold card">
+                    <AlertCircle size={14} /> Unpaid
+                  </button>
+                </div>
+
+                {cardResult.feePaid ? (
+                  cardResult.canPrint ? (
+                    <>
+                      <button className="btn btn-primary btn-sm" onClick={printCard} disabled={cardBusy}><FileText size={14} /> Print</button>
+                      <button className="btn btn-ghost btn-sm" onClick={saveCard} disabled={cardBusy}><Download size={14} /> Save PDF</button>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 12.5, color: '#c53030' }}>Card page not available — re-generate the admit cards.</span>
+                  )
+                ) : (
+                  <span style={{ fontSize: 12.5, color: '#c53030', fontWeight: 600 }}>Fee unpaid — card is on hold (portal &amp; email blocked). Mark Paid to release.</span>
+                )}
+                <button className="btn btn-ghost btn-sm" onClick={() => { setCardResult(null); setCardReg(''); }}>Clear</button>
+              </div>
+            ) : (
+              <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', marginBottom: 14, border: '1px solid #f5c2c2', background: '#fdeaea' }}>
+                <AlertCircle size={17} style={{ color: '#c53030' }} />
+                <span style={{ fontSize: 13.5 }}>No admit card found for <b>{cardReg}</b>. Check the registration number, or generate admit cards first.</span>
+                <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={() => setCardResult(null)}>Clear</button>
+              </div>
+            )
+          )}
+
+          {history.map((h, idx) => (
+            <div key={h._id} className="ds-history-item card" style={{ alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <div className={`ds-history-icon ${h.examType}`}>
+                <Contact size={18} />
+              </div>
+              {/* all the admit-card data on ONE line */}
+              <div className="ds-history-info" style={{ flex: 1, minWidth: 240 }}>
+                <div className="ds-history-name" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span>{h.title}</span>
+                  {idx === 0 && <span className="ds-hist-badge ok">Newest</span>}
+                </div>
+                <div className="ds-history-meta" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {h.createdAt && (
+                    <span style={{ fontWeight: 700 }}>
+                      <Clock size={11} /> Generated {new Date(h.createdAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}
+                    </span>
+                  )}
+                  <span>{h.summary?.admitCards} cards · {h.summary?.sessions} sessions</span>
+                  {h.summary?.auditClean === true && <span className="ds-hist-badge ok"><CheckCircle2 size={11} /> audit clean</span>}
+                  {h.summary?.auditClean === false && <span className="ds-hist-badge warn"><AlertCircle size={11} /> audit failed</span>}
+                  {typeof h.summary?.seatsShort === 'number' && (
+                    h.summary.seatsShort === 0
+                      ? <span className="ds-hist-badge ok"><CheckCircle2 size={11} /> all seated</span>
+                      : <span className="ds-hist-badge warn"><AlertCircle size={11} /> {h.summary.seatsShort} short</span>
+                  )}
+                </div>
+              </div>
+              {/* the 4 documents as a 2×2 square of buttons */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, width: 300, flexShrink: 0 }}>
+                {examSheets(h.files).map((f) => {
+                  const m = docMeta(f.label); const Icon = m.icon;
+                  return (
+                    <button key={f.filename} className="btn btn-ghost ac-hist-dl" onClick={() => download(h, f)} disabled={busy}
+                      title={`Download ${m.name}`}
+                      style={{ justifyContent: 'flex-start', gap: 7, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <Icon size={14} style={{ flexShrink: 0 }} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

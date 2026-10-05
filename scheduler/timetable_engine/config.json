@@ -1,0 +1,320 @@
+{
+ "rooms": [
+  {
+   "name": "Auditorium (J-205)",
+   "block": "J Block",
+   "cap": 80,
+   "type": "classroom"
+  },
+  {
+   "name": "I-011",
+   "block": "I Block",
+   "cap": 24,
+   "type": "classroom"
+  },
+  {
+   "name": "I-103",
+   "block": "I Block",
+   "cap": 16,
+   "type": "classroom"
+  },
+  {
+   "name": "I-104",
+   "block": "I Block",
+   "cap": 18,
+   "type": "classroom"
+  },
+  {
+   "name": "I-105",
+   "block": "I Block",
+   "cap": 18,
+   "type": "classroom"
+  },
+  {
+   "name": "I-106",
+   "block": "I Block",
+   "cap": 14,
+   "type": "classroom"
+  },
+  {
+   "name": "I-108",
+   "block": "I Block",
+   "cap": 24,
+   "type": "classroom"
+  },
+  {
+   "name": "I-109",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-110",
+   "block": "I Block",
+   "cap": 25,
+   "type": "classroom"
+  },
+  {
+   "name": "I-111",
+   "block": "I Block",
+   "cap": 22,
+   "type": "classroom"
+  },
+  {
+   "name": "I-112",
+   "block": "I Block",
+   "cap": 30,
+   "type": "classroom"
+  },
+  {
+   "name": "I-113",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-114",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-201",
+   "block": "I Block",
+   "cap": 28,
+   "type": "classroom"
+  },
+  {
+   "name": "I-202",
+   "block": "I Block",
+   "cap": 14,
+   "type": "classroom"
+  },
+  {
+   "name": "I-203",
+   "block": "I Block",
+   "cap": 14,
+   "type": "classroom"
+  },
+  {
+   "name": "I-204",
+   "block": "I Block",
+   "cap": 16,
+   "type": "classroom"
+  },
+  {
+   "name": "I-205",
+   "block": "I Block",
+   "cap": 16,
+   "type": "classroom"
+  },
+  {
+   "name": "I-206",
+   "block": "I Block",
+   "cap": 16,
+   "type": "classroom"
+  },
+  {
+   "name": "I-208",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-209",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-210",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-211",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-212",
+   "block": "I Block",
+   "cap": 25,
+   "type": "classroom"
+  },
+  {
+   "name": "I-213A",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-214",
+   "block": "I Block",
+   "cap": 20,
+   "type": "classroom"
+  },
+  {
+   "name": "I-215",
+   "block": "I Block",
+   "cap": 30,
+   "type": "classroom"
+  },
+  {
+   "name": "I-216",
+   "block": "I Block",
+   "cap": 30,
+   "type": "classroom"
+  },
+  {
+   "name": "J-209",
+   "block": "J Block",
+   "cap": 42,
+   "type": "classroom"
+  },
+  {
+   "name": "J-210",
+   "block": "J Block",
+   "cap": 44,
+   "type": "classroom"
+  },
+  {
+   "name": "J-211",
+   "block": "J Block",
+   "cap": 36,
+   "type": "classroom"
+  },
+  {
+   "name": "J-214",
+   "block": "J Block",
+   "cap": 48,
+   "type": "classroom"
+  },
+  {
+   "name": "J-301",
+   "block": "J Block",
+   "cap": 42,
+   "type": "classroom"
+  },
+  {
+   "name": "J-310",
+   "block": "J Block",
+   "cap": 42,
+   "type": "classroom"
+  },
+  {
+   "name": "J-311",
+   "block": "J Block",
+   "cap": 34,
+   "type": "classroom"
+  },
+  {
+   "name": "J-312",
+   "block": "J Block",
+   "cap": 46,
+   "type": "classroom"
+  },
+  {
+   "name": "J-313",
+   "block": "J Block",
+   "cap": 44,
+   "type": "classroom"
+  },
+  {
+   "name": "J-314",
+   "block": "J Block",
+   "cap": 48,
+   "type": "classroom"
+  },
+  {
+   "name": "J-315",
+   "block": "J Block",
+   "cap": 42,
+   "type": "classroom"
+  },
+  {
+   "name": "Main Hall-B(J-Block)",
+   "block": "J Block",
+   "cap": 75,
+   "type": "classroom"
+  }
+ ],
+ "block_min": 4,
+ "min_section": 15,
+ "split_above": 48,
+ "ms_level_from": 500,
+ "timetables": {
+  "BS": {
+   "days": [
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri"
+   ],
+   "slots": [
+    "08:30-10:00",
+    "10:00-11:30",
+    "11:30-13:00",
+    "14:00-15:30",
+    "15:30-17:00"
+   ],
+   "break_after_slot": 2,
+   "sessions_by_theory_cr": {
+    "3": [
+     1,
+     1
+    ],
+    "2": [
+     1
+    ],
+    "1": [
+     1
+    ]
+   },
+   "tag_by_theory_cr": {
+    "3": "",
+    "2": "[2Hrs]",
+    "1": "[1Hr]"
+   }
+  },
+  "MS": {
+   "days": [
+    "Sat",
+    "Sun"
+   ],
+   "slots": [
+    "08:30-11:30",
+    "11:30-14:30",
+    "14:30-17:30"
+   ],
+   "break_after_slot": -1,
+   "sessions_by_theory_cr": {
+    "3": [
+     1
+    ],
+    "2": [
+     1
+    ],
+    "1": [
+     1
+    ]
+   },
+   "tag_by_theory_cr": {
+    "3": "[3Hrs]",
+    "2": "[2Hrs]",
+    "1": "[1Hr]"
+   },
+   "max_per_day_group": 2
+  }
+ },
+ "labs_note": "future: add rooms with type 'lab' and lab sessions with dur=2 (two consecutive slots, 3h)",
+ "solver_seconds": 400,
+ "workers": 2,
+ "max_per_day_group": 3,
+ "max_per_day_teacher": 3,
+ "w_capacity": 200,
+ "w_room_overfull_session": 10000
+}

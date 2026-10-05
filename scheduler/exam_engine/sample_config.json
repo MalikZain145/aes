@@ -1,0 +1,19 @@
+{
+  "exam_type": "finals",
+  "start_date": "2026-10-31",
+  "window_mode": "by_days",
+  "num_days": 7,
+  "max_papers_per_day": 1,
+  "cohort_settings": { "btech": { "num_days": 7 }, "pg": { "num_days": 7 } },
+  "files": ["uploads/Course_Registration_Report.xls", "uploads/Course_Registration_Report_classwise.xls"],
+  "data_json": "output/db_export_latest.json",
+  "merge_groups": [["SU103", "VS101"], ["SU106", "DP112", "DP113"], ["SU105", "RT116"], ["RT102", "SU102", "VS102"], ["DP207", "SU104"], ["VS401", "SS401"]],
+  "same_day_groups": [["SS104", "SS203", "SS211"]],
+  "shared_paper_policy": "independent",
+  "room_turnover_min": 30,
+  "invigilator_max_per_day": 2,
+  "strict": true,
+  "outdir": "output/pipeline_run",
+  "admit": { "base_url": "", "fee_default": "Unpaid" },
+  "timetable": { "enabled": false }
+}

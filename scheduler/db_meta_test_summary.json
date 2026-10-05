@@ -1,0 +1,139 @@
+{
+  "capacityAdvisor": {
+    "grid": {
+      "days": 5,
+      "theorySlotsPerDay": 5,
+      "labSlotsPerDay": 2,
+      "rooms": 41,
+      "labs": 48
+    },
+    "theory": {
+      "demand": 839,
+      "capacity": 1025,
+      "utilizationPct": 81.9,
+      "placed": 822,
+      "unplaced": 17
+    },
+    "lab": {
+      "demand": 432,
+      "capacity": 480,
+      "utilizationPct": 90.0,
+      "placed": 399,
+      "unplaced": 33,
+      "overflows": 0
+    },
+    "bottleneckDepartments": [
+      {
+        "department": "rt",
+        "labDemand": 71,
+        "labCapacity": 30,
+        "unplaced": 17,
+        "boundBy": "both",
+        "saturatedTeachers": 1,
+        "labsToAdd": 5
+      },
+      {
+        "department": "mlt",
+        "labDemand": 60,
+        "labCapacity": 60,
+        "unplaced": 6,
+        "boundBy": "scheduling",
+        "saturatedTeachers": 0,
+        "labsToAdd": 0
+      },
+      {
+        "department": "pharmd",
+        "labDemand": 79,
+        "labCapacity": 50,
+        "unplaced": 3,
+        "boundBy": "rooms",
+        "saturatedTeachers": 0,
+        "labsToAdd": 3
+      },
+      {
+        "department": "dpt",
+        "labDemand": 78,
+        "labCapacity": 50,
+        "unplaced": 3,
+        "boundBy": "both",
+        "saturatedTeachers": 2,
+        "labsToAdd": 3
+      },
+      {
+        "department": "cs",
+        "labDemand": 33,
+        "labCapacity": 90,
+        "unplaced": 2,
+        "boundBy": "scheduling",
+        "saturatedTeachers": 0,
+        "labsToAdd": 0
+      },
+      {
+        "department": "ot",
+        "labDemand": 23,
+        "labCapacity": 20,
+        "unplaced": 1,
+        "boundBy": "rooms",
+        "saturatedTeachers": 0,
+        "labsToAdd": 1
+      },
+      {
+        "department": "common",
+        "labDemand": 2,
+        "labCapacity": 30,
+        "unplaced": 1,
+        "boundBy": "scheduling",
+        "saturatedTeachers": 0,
+        "labsToAdd": 0
+      },
+      {
+        "department": "vs",
+        "labDemand": 31,
+        "labCapacity": 20,
+        "unplaced": 0,
+        "boundBy": "rooms",
+        "saturatedTeachers": 0,
+        "labsToAdd": 2
+      }
+    ],
+    "recommendations": [
+      "Dept 'rt': ROOM + TEACHER bound \u2014 add ~5 lab room(s) AND relieve 1 teacher(s) at the 10-lab max (demand 71 vs capacity 30/wk, 17 unplaced).",
+      "Dept 'mlt': scheduling-bound \u2014 rooms & teachers have room, but batch/student overlaps block 6 session(s); spreading that batch's load helps.",
+      "Dept 'pharmd': ROOM-bound \u2014 add ~3 lab room(s) (demand 79 vs capacity 50/wk, 3 unplaced).",
+      "Dept 'dpt': ROOM + TEACHER bound \u2014 add ~3 lab room(s) AND relieve 2 teacher(s) at the 10-lab max (demand 78 vs capacity 50/wk, 3 unplaced).",
+      "Dept 'cs': scheduling-bound \u2014 rooms & teachers have room, but batch/student overlaps block 2 session(s); spreading that batch's load helps.",
+      "Dept 'ot': ROOM-bound \u2014 add ~1 lab room(s) (demand 23 vs capacity 20/wk, 1 unplaced).",
+      "17 theory session(s) unplaced despite spare rooms \u2014 a teacher/batch bottleneck; splitting a very large section or spreading a teacher's load helps."
+    ]
+  },
+  "status": "ok",
+  "mode": "DATABASE",
+  "seed": 2433941330,
+  "scheduleFile": "db_meta_test_schedule.json",
+  "excelFile": "db_meta_test.xlsx",
+  "pdfFile": null,
+  "reportFile": "Clash_Report.txt",
+  "clashes": {
+    "teacher": 0,
+    "room": 0,
+    "lab": 0,
+    "capacity": 0,
+    "total": 0
+  },
+  "fullyClashFree": true,
+  "accuracy": 97.37,
+  "stats": {
+    "lectureRows": 560,
+    "labRows": 432,
+    "theorySessions": 822,
+    "labSessions": 399,
+    "totalSessions": 1254,
+    "perfectSessions": 1221,
+    "splitGroups": 282,
+    "programs": 19,
+    "namedTeachers": 160,
+    "tbaCourses": 14,
+    "labOverflows": 0,
+    "labUnplaced": 33
+  }
+}

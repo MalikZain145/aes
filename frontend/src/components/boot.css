@@ -1,0 +1,94 @@
+/* ============================================================
+   BootScreen — branded preloader
+   Deep-green field, the shield fills from a faint outline to
+   solid, then "Abasyn Scheduler" assembles from scattered letters.
+   ============================================================ */
+.boot {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  /* crest cut-outs read as this colour */
+  --crest-bg: #07231a;
+  background:
+    radial-gradient(120% 90% at 50% 8%, #0f3d2e 0%, #0a2a1f 46%, #07231a 100%);
+  overflow: hidden;
+}
+
+.boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 26px;
+  padding: 24px;
+}
+
+/* ── Logo + fill ── */
+.boot-logo {
+  position: relative;
+  width: 132px;
+  height: 132px;
+  color: #eaf4ee;              /* the "empty" outline tone */
+  filter: drop-shadow(0 12px 30px rgba(0, 0, 0, 0.35));
+}
+.boot-logo-base,
+.boot-logo-fill {
+  position: absolute;
+  inset: 0;
+  display: block;
+  line-height: 0;
+}
+.boot-logo-base { opacity: 0.16; }
+.boot-logo-fill { color: #2fd39f; }   /* bright mint fill */
+
+.boot-logo-shine {
+  position: absolute;
+  left: -10%;
+  width: 120%;
+  height: 40px;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+/* ── Assembling wordmark ── */
+.boot-word {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-display, 'Fraunces', Georgia, serif);
+  font-weight: 600;
+  font-size: 34px;
+  letter-spacing: 0.01em;
+  color: #ffffff;
+  white-space: pre;
+}
+.boot-letter { display: inline-block; will-change: transform, opacity; }
+.boot-space { width: 0.34em; }
+
+.boot-tagline {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #7cc7ab;
+}
+
+.boot-dots { display: flex; gap: 8px; }
+.boot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2fd39f;
+  display: block;
+}
+
+@media (max-width: 560px) {
+  .boot-logo { width: 104px; height: 104px; }
+  .boot-word { font-size: 27px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boot-logo-fill { clip-path: none !important; }
+  .boot-logo-shine { display: none; }
+}

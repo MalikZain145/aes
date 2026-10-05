@@ -1,0 +1,129 @@
+.spin { animation: spin 0.9s linear infinite; }
+
+.di-format { padding: 20px 22px; margin-bottom: 20px; }
+.di-format-head {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 14px; font-weight: 600; color: var(--text-strong);
+  margin-bottom: 14px;
+}
+.di-format-head svg { color: var(--ink-600); }
+.di-format-cols { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.di-col-chip {
+  font-size: 12px; font-weight: 600;
+  padding: 5px 11px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-family: var(--font-mono);
+}
+.di-format-note { font-size: 13px; line-height: 1.6; color: var(--text-soft); }
+.di-format-note strong { color: var(--text); }
+.di-mono { font-family: var(--font-mono); font-size: 12px; color: var(--ink-700); }
+
+/* Dropzone */
+.di-drop {
+  border: 2px dashed var(--line);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  padding: 44px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.di-drop:hover { border-color: var(--ink-300); background: var(--ink-50); }
+.di-drop.over { border-color: var(--ink-500); background: var(--ink-50); transform: scale(1.005); }
+.di-drop.has-file { border-style: solid; border-color: var(--ink-200); background: var(--ink-50); }
+.di-drop-icon {
+  width: 64px; height: 64px;
+  border-radius: var(--r-lg);
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  margin-bottom: 16px;
+}
+.di-drop-icon.ok { background: var(--ok-bg); color: var(--ok); }
+.di-drop-title { font-size: 16px; font-weight: 600; color: var(--text-strong); }
+.di-drop-sub { font-size: 13px; color: var(--text-faint); margin-top: 5px; }
+.di-drop-filename { font-size: 16px; font-weight: 600; color: var(--text-strong); word-break: break-all; }
+.di-drop-size { font-size: 13px; color: var(--text-soft); margin-top: 5px; }
+
+/* Actions */
+.di-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+.di-replace {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  cursor: pointer;
+  flex: 1;
+  min-width: 280px;
+}
+.di-replace input { display: none; }
+.di-replace-box {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  border: 1.5px solid var(--line);
+  background: var(--surface);
+  display: grid; place-items: center;
+  color: #fff;
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: all 0.15s;
+}
+.di-replace input:checked + .di-replace-box { background: var(--err); border-color: var(--err); }
+.di-replace-text { display: flex; flex-direction: column; gap: 2px; }
+.di-replace-text strong { font-size: 14px; color: var(--text-strong); font-weight: 600; }
+.di-replace-text small { font-size: 12.5px; color: var(--text-soft); }
+.di-upload-btn { flex-shrink: 0; }
+
+.di-warning {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 14px; padding: 12px 15px;
+  background: var(--err-bg);
+  border: 1px solid #f1c9c4;
+  border-radius: var(--r-md);
+  font-size: 13px; color: var(--err); font-weight: 500;
+}
+
+/* Result */
+.di-result { padding: 24px; margin-top: 22px; }
+.di-result-head {
+  display: flex; align-items: center; gap: 11px;
+  margin-bottom: 18px;
+}
+.di-result-head svg { color: var(--ok); }
+.di-result-head h3 { font-size: 18px; font-weight: 600; color: var(--text-strong); }
+.di-result-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+.di-stat {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 18px 12px;
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  text-align: center;
+}
+.di-stat-icon { color: var(--ink-500); }
+.di-stat-value { font-size: 26px; font-weight: 700; color: var(--text-strong); font-family: var(--font-display); line-height: 1; }
+.di-stat-label { font-size: 12px; color: var(--text-soft); }
+.di-result-note {
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 16px; font-size: 13px; color: var(--warn); font-weight: 500;
+}
+.di-result-foot { margin-top: 14px; font-size: 13.5px; color: var(--text-soft); }
+
+@media (max-width: 700px) {
+  .di-result-grid { grid-template-columns: repeat(2, 1fr); }
+  .di-upload-btn { width: 100%; }
+}

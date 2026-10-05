@@ -1,0 +1,70 @@
+.rl-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+  /* On narrow screens the strip scrolls sideways instead of squeezing the
+     tab labels until they clip. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.rl-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-soft);
+  border-bottom: 2.5px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.16s, border-color 0.16s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.rl-tab:hover { color: var(--text-strong); }
+.rl-tab.active { color: var(--ink-800); border-bottom-color: var(--ink-700); }
+.rl-tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-soft);
+}
+.rl-tab.active .rl-tab-count { background: var(--ink-100); color: var(--ink-700); }
+
+.cap-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* search box + exam-capacity badge */
+.rl-search {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border: 1px solid var(--line, #dbe3ea); border-radius: 999px;
+  background: var(--surface, #fff); min-width: 240px;
+}
+.rl-search svg { color: var(--text-soft, #6c7b72); flex-shrink: 0; }
+.rl-search input { border: none; outline: none; background: transparent; font-size: 13.5px;
+  width: 100%; color: var(--text-strong, #1c2b22); }
+.rl-search-clear { border: none; background: transparent; cursor: pointer; font-size: 18px;
+  line-height: 1; color: var(--text-soft, #6c7b72); }
+.cap-badge.exam { background: #d1e7dd; color: #0f5132; }
+@media (max-width: 700px) { .rl-search { min-width: 0; width: 100%; margin: 8px 0 0; } }

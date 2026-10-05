@@ -1,0 +1,17 @@
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/venv
+**/.venv
+frontend/dist
+scheduler/output/*.pdf
+scheduler/output/*.xlsx
+scheduler/output/*.txt
+scheduler/output/*.json
+backend/.env
+backend/.admit_secret
+.git
+*.log
+mobile
+docs
+.claude

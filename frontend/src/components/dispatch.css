@@ -1,0 +1,71 @@
+/* ── Finance admit-card dispatch ─────────────────────────────────────────── */
+.dsp { padding: 20px; margin-top: 20px; }
+.dsp-head { display: flex; gap: 13px; align-items: flex-start; margin-bottom: 14px; }
+.dsp-head-ic {
+  flex-shrink: 0; width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--ink-700); color: var(--on-dark);
+}
+.dsp-head h3 { font-size: 17px; color: var(--ink-800); margin: 0; }
+.dsp-head p { font-size: 13px; color: var(--text-soft); margin: 3px 0 0; }
+
+.dsp-dev {
+  display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 9px 13px;
+  background: var(--warn-bg, #fff3cd); color: #664d03; border-radius: var(--r-md, 10px); font-size: 12.5px; font-weight: 500;
+}
+.dsp-dev svg { flex-shrink: 0; }
+.dsp-empty {
+  display: flex; align-items: center; gap: 9px; padding: 22px; justify-content: center;
+  color: var(--text-faint); font-size: 13.5px; background: var(--surface-2); border-radius: var(--r-md, 10px);
+}
+
+.dsp-row { margin-top: 14px; }
+.dsp-label { display: block; font-size: 13px; font-weight: 600; color: var(--text-soft); margin-bottom: 6px; }
+.dsp-hint { font-weight: 400; color: var(--text-faint); font-size: 11.5px; }
+.dsp-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dsp-fname { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-700); font-weight: 600; }
+.dsp-x { border: 0; background: transparent; color: var(--text-faint); cursor: pointer; display: flex; }
+.btn-soft { background: var(--ink-50); color: var(--ink-700); border: 1px solid var(--line); }
+.btn-soft:hover { background: var(--ink-100); }
+.btn-sm { padding: 7px 12px; font-size: 12.5px; }
+
+.dsp-go { margin-top: 16px; }
+
+.dsp-result { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+.dsp-stats { display: flex; flex-wrap: wrap; gap: 12px; }
+.dsp-stat {
+  flex: 1 1 110px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md, 10px);
+  padding: 12px 14px; text-align: center;
+}
+.dsp-stat b { display: block; font-size: 22px; font-weight: 800; color: var(--ink-800); }
+.dsp-stat span { font-size: 11.5px; color: var(--text-faint); }
+.dsp-stat.ok b { color: var(--ok, #198754); }
+.dsp-stat.warn b { color: var(--err, #dc3545); }
+
+.dsp-allok {
+  display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 12px 15px;
+  background: var(--ok-bg, #d1e7dd); color: var(--ink-700, #0f5132); border-radius: var(--r-md, 10px); font-size: 13.5px; font-weight: 600;
+}
+
+.dsp-fail { margin-top: 16px; }
+.dsp-fail-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.dsp-fail-head span { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 700; color: #842029; }
+.dsp-tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-md, 10px); }
+.dsp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dsp-table th { background: var(--ink-700); color: var(--on-dark); text-align: left; padding: 8px 10px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+.dsp-table td { padding: 7px 10px; border-bottom: 1px solid var(--line-soft); color: var(--text); }
+.dsp-table tbody tr:nth-child(even) td { background: var(--surface-2); }
+.dsp-mono { font-family: ui-monospace, Menlo, monospace; font-weight: 700; color: var(--ink-700); white-space: nowrap; }
+.dsp-reason { color: var(--err, #b02a37); font-size: 12px; }
+
+/* segmented control + per-group results (timetable email) */
+.dsp-seg { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.dsp-seg-btn {
+  padding: 8px 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  font-size: 12.5px; font-weight: 600; color: var(--text-soft); cursor: pointer;
+}
+.dsp-seg-btn.active { background: var(--ink-700); color: var(--on-dark); border-color: var(--ink-700); }
+.dsp-grp { margin-top: 14px; }
+.dsp-grp-h { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 700; color: var(--ink-800); margin-bottom: 8px; }
+.dsp-grp-total { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--text-faint); }

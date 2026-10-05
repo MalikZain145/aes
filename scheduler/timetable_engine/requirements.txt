@@ -1,0 +1,7 @@
+# AUIC Timetable Engine — Python dependencies
+# Install:  pip install -r requirements.txt
+ortools>=9.10
+xlrd>=2.0.1
+openpyxl>=3.1
+scipy>=1.10
+numpy>=1.24

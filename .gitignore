@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Build output
+frontend/dist/
+
+# Environment
+backend/.env
+.env
+backend/.admit_secret
+
+# Generated scheduler output
+scheduler/output/*.xlsx
+scheduler/output/*.pdf
+scheduler/output/*.txt
+scheduler/output/*.json
+!scheduler/output/.gitkeep
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db

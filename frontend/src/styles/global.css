@@ -1,0 +1,320 @@
+/* ============================================================
+   Abasyn Scheduler — Design System
+   ------------------------------------------------------------
+   Identity: an academic institution's operations tool.
+   Forest green (regalia/ivy) + warm parchment + brass accent.
+   Display face: Fraunces (a literary, collegiate serif).
+   Body: Inter. Data/codes: JetBrains Mono.
+   ============================================================ */
+
+:root {
+  /* ── Brand greens ── */
+  --ink-900: #0a2a1f;   /* deepest, sidebar base */
+  --ink-800: #0f3d2e;   /* primary brand green */
+  --ink-700: #15503c;
+  --ink-600: #1c6b4f;
+  --ink-500: #248a64;   /* interactive green */
+  --ink-400: #46a884;
+  --ink-300: #7cc7ab;
+  --ink-200: #b9e2d3;
+  --ink-100: #e3f3ec;
+  --ink-50:  #f1faf6;
+
+  /* ── Brass accent (academic gold, used sparingly) ── */
+  --brass-600: #9a7224;
+  --brass-500: #c8962f;
+  --brass-400: #e0b14e;
+  --brass-100: #f8edd3;
+
+  /* ── Parchment surfaces ── */
+  --paper:      #fbfaf6;  /* app background */
+  --surface:    #ffffff;  /* cards */
+  --surface-2:  #f5f4ee;  /* subtle panels */
+  --line:       #e7e5dc;  /* hairline borders */
+  --line-soft:  #f0eee7;
+
+  /* ── Text ── */
+  --text-strong: #16241d;
+  --text:        #2f3b34;
+  --text-soft:   #5d6b62;
+  --text-faint:  #8a958d;
+  --on-dark:     #eaf4ee;
+  --on-dark-soft:#a7c4b6;
+
+  /* ── Status ── */
+  --ok:    #1c8a5a;
+  --ok-bg: #e2f4ea;
+  --warn:  #b87514;
+  --warn-bg:#fbeedd;
+  --err:   #c0392b;
+  --err-bg:#fbe9e7;
+  --info:  #2563a8;
+  --info-bg:#e7f0fa;
+
+  /* ── Geometry ── */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+  --r-pill: 999px;
+
+  /* ── Shadows (soft, warm-tinted) ── */
+  --sh-xs: 0 1px 2px rgba(20, 40, 30, 0.05);
+  --sh-sm: 0 2px 8px rgba(20, 40, 30, 0.06);
+  --sh-md: 0 8px 24px rgba(20, 40, 30, 0.08);
+  --sh-lg: 0 18px 48px rgba(15, 61, 46, 0.14);
+  --sh-glow: 0 0 0 4px rgba(36, 138, 100, 0.12);
+
+  /* ── Layout ── */
+  --sidebar-w: 256px;
+  --topbar-h: 70px;
+
+  /* ── Type ── */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--paper);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+input, select, textarea { font-family: inherit; }
+
+::selection { background: var(--ink-200); color: var(--ink-900); }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--ink-200);
+  border-radius: var(--r-pill);
+  border: 2px solid var(--paper);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--ink-300); }
+
+/* ── Typography helpers ── */
+.font-display { font-family: var(--font-display); }
+.font-mono { font-family: var(--font-mono); }
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ── Focus ── */
+:focus-visible {
+  outline: 2px solid var(--ink-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ── Reusable atoms ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 11px 18px;
+  border-radius: var(--r-md);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--ink-800);
+  color: var(--on-dark);
+  box-shadow: var(--sh-sm);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--ink-700);
+  box-shadow: var(--sh-md);
+}
+
+.btn-ghost {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--ink-200);
+}
+
+.btn-brass {
+  background: linear-gradient(135deg, var(--brass-500), var(--brass-400));
+  color: #3a2c0a;
+  box-shadow: var(--sh-sm);
+}
+.btn-brass:hover:not(:disabled) { filter: brightness(1.04); box-shadow: var(--sh-md); }
+
+/* While the backend is generating, the brass button shows a golden fill that
+   sweeps left → right on a loop — a live "working" indicator (indeterminate). */
+.btn-brass.is-generating {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  opacity: 1;               /* override the dimmed :disabled look */
+  cursor: progress;
+}
+.btn-brass.is-generating::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(90deg, #ecc877, #fbe6a8 70%, #ffe9b0);
+  transform-origin: left center;
+  animation: brass-fill 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+@keyframes brass-fill {
+  0%   { transform: scaleX(0); opacity: .92; }
+  55%  { transform: scaleX(1); opacity: 1; }
+  100% { transform: scaleX(1); opacity: 0; }
+}
+.gen-btn-label { position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 8px; }
+
+.btn-danger {
+  background: var(--err-bg);
+  color: var(--err);
+  border: 1px solid #f1c9c4;
+}
+.btn-danger:hover:not(:disabled) { background: #f8ddd9; }
+
+.btn-sm { padding: 8px 13px; font-size: 13px; }
+.btn-icon { padding: 9px; border-radius: var(--r-sm); }
+
+/* Card */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-xs);
+}
+
+/* Pills / badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+}
+.badge-ok { background: var(--ok-bg); color: var(--ok); }
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+.badge-err { background: var(--err-bg); color: var(--err); }
+.badge-info { background: var(--info-bg); color: var(--info); }
+.badge-neutral { background: var(--surface-2); color: var(--text-soft); }
+
+/* ── Adaptable tags / pills / badges ──────────────────────────────────────
+   Small labelled containers must size to their TEXT and never clip when the
+   screen narrows: keep them on one line, stop the flex parent from squeezing
+   them, and let rows of them wrap to the next line instead of overflowing. */
+.badge, .chip, .comp-tag, .dept-pill, .dash-pill, .dash-stat-chip, .cap-badge,
+.rl-tab-count, .topbar-badge, .pop-head-count, .toolbar-count,
+.pill-upcoming, .pill-inprogress, .pill-cancelled {
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 100%;
+}
+/* Containers that hold several pills — wrap instead of clipping. */
+.dept-pills, .chip-group { flex-wrap: wrap; min-width: 0; }
+
+/* Inputs */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+.input, .select {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text-strong);
+  font-size: 14px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.input:focus, .select:focus {
+  outline: none;
+  border-color: var(--ink-400);
+  box-shadow: var(--sh-glow);
+}
+.input::placeholder { color: var(--text-faint); }
+
+/* Spinner */
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid rgba(255,255,255,0.35);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.spinner-dark {
+  border-color: var(--ink-100);
+  border-top-color: var(--ink-600);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Skeleton shimmer */
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--line-soft) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: var(--r-sm);
+}
+@keyframes shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* Utility */
+.row { display: flex; align-items: center; }
+.between { justify-content: space-between; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: 16px; }
+.muted { color: var(--text-soft); }
+.faint { color: var(--text-faint); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

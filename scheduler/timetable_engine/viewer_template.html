@@ -1,0 +1,147 @@
+<title>AUIC Timetable Fall 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: control bar -> verdict strip -> week grid (days as columns, 1.5h periods as rows, break row in between) */
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --ink:#172033; --muted:#5b6478; --line:#dde1e8;
+  --accent:#1d4e89; --accent-soft:#e3ecf7; --warm:#b5651d; --warm-soft:#f8ecdf;
+  --ok:#1f7a4d; --ok-soft:#e1f2e8; --bad:#b3261e; --bad-soft:#fbe4e2;
+  --display:"Archivo","Segoe UI",system-ui,sans-serif;
+  --body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#10141c; --panel:#171d28; --ink:#e6e9ef; --muted:#9aa3b5; --line:#2a3242;
+  --accent:#7fb0ea; --accent-soft:#1c2d45; --warm:#e4a468; --warm-soft:#3a2a1b;
+  --ok:#6fcf9b; --ok-soft:#173326; --bad:#f08c84; --bad-soft:#3d1c1a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#10141c; --panel:#171d28; --ink:#e6e9ef; --muted:#9aa3b5; --line:#2a3242;
+  --accent:#7fb0ea; --accent-soft:#1c2d45; --warm:#e4a468; --warm-soft:#3a2a1b;
+  --ok:#6fcf9b; --ok-soft:#173326; --bad:#f08c84; --bad-soft:#3d1c1a; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45}
+.wrap{max-width:1400px;margin:0 auto;padding-inline:16px;padding-block:20px 48px;display:flex;flex-direction:column;gap:16px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px}
+h1{font-family:var(--display);font-weight:800;font-size:1.6rem;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.sub{color:var(--muted);margin:2px 0 0}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg button{font:600 .95rem var(--display);border:0;background:none;color:var(--muted);padding:8px 18px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--panel)}
+.seg button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--warm);outline-offset:2px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.controls label{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+select,input{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:7px 10px;min-width:0}
+#pick{width:min(460px,100%)}
+.verdict{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:.8rem;padding:5px 10px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.chip.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.chip.warn{background:var(--warm-soft);color:var(--warm);border-color:transparent}
+.gridwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th,td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);vertical-align:top;padding:6px}
+th{font:700 .8rem var(--display);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);text-align:left;background:var(--bg)}
+td.time{font-family:var(--mono);font-size:.78rem;color:var(--muted);white-space:nowrap;width:92px;background:var(--bg)}
+tr.brk td{background:repeating-linear-gradient(135deg,var(--bg) 0 8px,var(--panel) 8px 16px);text-align:center;color:var(--muted);font-size:.8rem;padding:4px}
+.card{border-radius:6px;padding:6px 8px;background:var(--accent-soft);display:flex;flex-direction:column;gap:1px;margin-bottom:4px}
+.card:last-child{margin-bottom:0}
+.card .code{font:600 .8rem var(--mono);color:var(--accent)}
+.card .ttl{font-weight:600;font-size:.86rem;line-height:1.25}
+.card .meta{font-size:.78rem;color:var(--muted)}
+.card.over{box-shadow:inset 3px 0 0 var(--warm)}
+.card .tag{font:600 .7rem var(--mono);color:var(--warm);margin-left:4px}
+.empty{color:var(--muted);padding:24px}
+.foot{color:var(--muted);font-size:.85rem;max-width:80ch}
+@media (max-width:600px){h1{font-size:1.3rem}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>AUIC Theory Timetable · Fall 2026</h1>
+      <p class="sub" id="subline"></p>
+    </div>
+    <div class="seg" role="group" aria-label="Programme level">
+      <button id="btnBS" aria-pressed="true">BS · Mon–Fri</button>
+      <button id="btnMS" aria-pressed="false">MS · Sat–Sun</button>
+    </div>
+  </header>
+
+  <div class="controls">
+    <label for="view">View by
+      <select id="view">
+        <option value="class">Class / section group</option>
+        <option value="teacher">Teacher</option>
+        <option value="room">Room</option>
+        <option value="course">Course</option>
+      </select>
+    </label>
+    <label for="find">Filter list
+      <input id="find" type="search" placeholder="e.g. Computer Science | Fall 2025">
+    </label>
+    <label for="pick">Showing
+      <select id="pick"></select>
+    </label>
+  </div>
+
+  <div class="verdict" id="verdict"></div>
+  <div class="gridwrap"><table id="grid"></table></div>
+  <p class="foot">Orange edge = more students than the room's seats (extra chairs needed). [2Hrs]/[1Hr] = 2- or 1-credit course held in one slot. Generated by CP-SAT with zero room, teacher and student clashes; every student's personal schedule was checked individually.</p>
+</div>
+
+<script>
+const DATA = /*DATA*/;
+let tt = "BS";
+const $ = id => document.getElementById(id);
+function keysFor(e, view){
+  if(view==="class") return e.classes.length ? e.classes : ["Mixed / other students"];
+  if(view==="teacher") return [e.teacher];
+  if(view==="room") return [e.room + " (" + e.room_capacity + ")"];
+  return [e.course_code + " " + e.course_title];
+}
+function buildPick(){
+  const view=$("view").value, q=$("find").value.toLowerCase();
+  const set=new Map();
+  for(const e of DATA[tt].entries) for(const k of keysFor(e,view)) set.set(k,(set.get(k)||0)+1);
+  const keys=[...set.keys()].filter(k=>k.toLowerCase().includes(q)).sort();
+  const prev=$("pick").value;
+  $("pick").innerHTML=keys.map(k=>`<option>${esc(k)}</option>`).join("");
+  if(keys.includes(prev)) $("pick").value=prev;
+  render();
+}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function render(){
+  const T=DATA[tt], view=$("view").value, key=$("pick").value;
+  const m=T.metrics;
+  $("subline").textContent = `${m.sections} sections · ${m.sessions} weekly sessions · ${m.students_total} students · ${T.days.join(", ")}`;
+  const clash=m.room_double_booked+m.teacher_clash+m.student_clash;
+  $("verdict").innerHTML=[
+    `<span class="chip ${clash?'warn':'ok'}">${clash} clashes (room · teacher · student)</span>`,
+    `<span class="chip">rooms used ${m.room_utilisation_pct}% of ${m.room_slots_available} room-slots</span>`,
+    `<span class="chip ${m.sessions_over_room_capacity?'warn':'ok'}">${m.sessions_over_room_capacity} sessions over room seats</span>`,
+    `<span class="chip">max classes/day per student: ${Object.entries(m.students_by_max_classes_per_day).map(([k,v])=>k+"→"+v).join(" · ")}</span>`
+  ].join("");
+  const cells={};
+  for(const e of T.entries){ if(!keysFor(e,view).includes(key)) continue;
+    const c=(cells[e.day+"|"+e.slot_index] ||= []); c.push(e); }
+  let h=`<thead><tr><th>Time</th>${T.days.map(d=>`<th>${d}</th>`).join("")}</tr></thead><tbody>`;
+  T.slots.forEach((s,k)=>{
+    h+=`<tr><td class="time">${s}</td>`;
+    for(const d of T.days){
+      const list=cells[d+"|"+k]||[];
+      h+=`<td>${list.map(e=>`<div class="card ${e.students>e.room_capacity?'over':''}">
+        <span class="code">${esc(e.course_code)}-${esc(e.section)}${e.tag?`<span class="tag">${esc(e.tag)}</span>`:""}</span>
+        <span class="ttl">${esc(e.course_title)}</span>
+        <span class="meta">${esc(view==="teacher"?e.room:e.teacher)} · ${view==="room"?esc(e.teacher):esc(e.room)} · ${e.students}/${e.room_capacity}</span>
+      </div>`).join("")}</td>`;
+    }
+    h+=`</tr>`;
+    if(k===T.break_after) h+=`<tr class="brk"><td colspan="${T.days.length+1}">Break 13:00–14:00</td></tr>`;
+  });
+  $("grid").innerHTML=h+"</tbody>";
+}
+function setTT(x){tt=x;$("btnBS").setAttribute("aria-pressed",x==="BS");$("btnMS").setAttribute("aria-pressed",x==="MS");buildPick();}
+$("btnBS").onclick=()=>setTT("BS"); $("btnMS").onclick=()=>setTT("MS");
+$("view").onchange=()=>{$("find").value="";buildPick()}; $("find").oninput=buildPick; $("pick").onchange=render;
+buildPick();
+</script>

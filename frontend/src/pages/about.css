@@ -1,0 +1,157 @@
+.ab-hero {
+  position: relative;
+  background:
+    radial-gradient(600px 260px at 88% -30%, rgba(200, 150, 47, 0.16), transparent),
+    linear-gradient(135deg, var(--ink-800), var(--ink-700) 70%, var(--ink-600));
+  border-radius: var(--r-xl);
+  padding: 40px 44px;
+  color: var(--on-dark);
+  overflow: hidden;
+  box-shadow: var(--sh-md);
+  margin-bottom: 36px;
+}
+.ab-hero-content { position: relative; z-index: 2; max-width: 680px; }
+.ab-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 13px;
+  border-radius: var(--r-pill);
+  background: rgba(200, 150, 47, 0.16);
+  color: var(--brass-400);
+  border: 1px solid rgba(200, 150, 47, 0.25);
+  margin-bottom: 18px;
+}
+.ab-hero-title {
+  font-size: 38px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  margin-bottom: 16px;
+}
+.ab-hero-text {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--on-dark-soft);
+  margin-bottom: 26px;
+}
+.ab-hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.ab-hero-actions .btn-ghost {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--on-dark);
+}
+.ab-hero-actions .btn-ghost:hover { background: rgba(255, 255, 255, 0.14); }
+.ab-hero-art {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: rgba(255, 255, 255, 0.07);
+  z-index: 1;
+}
+
+.ab-section { margin-bottom: 38px; }
+.ab-section-title { font-size: 22px; font-weight: 600; color: var(--text-strong); margin-bottom: 20px; }
+
+/* Flow */
+.ab-flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+.ab-flow-wrap { display: flex; align-items: center; flex: 1; min-width: 240px; }
+.ab-flow-card {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  box-shadow: var(--sh-xs);
+  height: 100%;
+}
+.ab-flow-icon {
+  width: 52px; height: 52px;
+  border-radius: var(--r-lg);
+  display: grid; place-items: center;
+  background: var(--ink-100);
+  color: var(--ink-700);
+  margin-bottom: 16px;
+}
+.ab-flow-step {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass-600);
+  margin-bottom: 6px;
+}
+.ab-flow-title { font-size: 16px; font-weight: 600; color: var(--text-strong); margin-bottom: 7px; }
+.ab-flow-desc { font-size: 13.5px; line-height: 1.55; color: var(--text-soft); }
+.ab-flow-arrow {
+  padding: 0 14px;
+  color: var(--ink-300);
+  flex-shrink: 0;
+}
+
+/* Stats strip */
+.ab-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 24px;
+  margin-bottom: 38px;
+  box-shadow: var(--sh-xs);
+}
+.ab-stat { display: flex; align-items: center; gap: 13px; }
+.ab-stat svg { color: var(--ink-500); flex-shrink: 0; }
+.ab-stat > div { display: flex; flex-direction: column; }
+.ab-stat-num { font-size: 20px; font-weight: 700; color: var(--text-strong); font-family: var(--font-display); line-height: 1; }
+.ab-stat-lbl { font-size: 12.5px; color: var(--text-soft); margin-top: 3px; }
+
+/* FAQ */
+.ab-faq { display: flex; flex-direction: column; gap: 14px; }
+.ab-faq-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 22px 24px;
+  box-shadow: var(--sh-xs);
+}
+.ab-faq-q {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 9px;
+  font-family: var(--font-display);
+}
+.ab-faq-a { font-size: 14px; line-height: 1.65; color: var(--text-soft); }
+
+/* Footer */
+.ab-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 0 8px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.ab-foot-brand { display: flex; align-items: center; gap: 12px; }
+.ab-foot-logo { height: 32px; width: auto; display: block; }
+.ab-foot-name { font-size: 16px; font-weight: 600; color: var(--text-strong); }
+.ab-foot-tag { font-size: 12.5px; color: var(--brass-600); font-weight: 500; }
+.ab-foot-meta { font-size: 12.5px; color: var(--text-faint); }
+
+@media (max-width: 900px) {
+  .ab-stats { grid-template-columns: repeat(2, 1fr); }
+  .ab-flow-arrow { display: none; }
+  .ab-flow-wrap { min-width: 100%; margin-bottom: 12px; }
+}
+@media (max-width: 600px) {
+  .ab-hero { padding: 28px 24px; }
+  .ab-hero-title { font-size: 28px; }
+  .ab-hero-art { display: none; }
+  .ab-stats { grid-template-columns: 1fr; }
+}

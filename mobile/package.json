@@ -1,0 +1,23 @@
+{
+  "name": "abasyn-exam-scanner",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios"
+  },
+  "dependencies": {
+    "babel-preset-expo": "~54.0.10",
+    "expo": "~54.0.10",
+    "expo-camera": "~17.0.10",
+    "expo-network": "~8.0.7",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2"
+  },
+  "private": true
+}

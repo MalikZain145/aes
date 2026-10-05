@@ -1,0 +1,27 @@
+.ep-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.ep-card { padding: 18px; }
+.ep-card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 15px; }
+.ep-drop { border: 2px dashed var(--border, #94c7ac); border-radius: 12px; padding: 22px; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; cursor: pointer; font-size: 13px; color: var(--muted, #5c6b63); }
+.ep-drop:hover { background: rgba(25, 135, 84, 0.05); }
+.ep-files { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.ep-files li { display: flex; justify-content: space-between; align-items: center; font-size: 13px; padding: 6px 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.03); }
+.ep-files button { background: none; border: 0; cursor: pointer; color: #b02a37; }
+.ep-note { font-size: 12px; color: var(--muted, #5c6b63); margin-top: 10px; }
+.ep-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.ep-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.ep-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; }
+.ep-fields input, .ep-fields select, .ep-cohort input { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, #cfd8d3); font: inherit; font-weight: 400; }
+.ep-cohorts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.ep-cohort { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.ep-cohort input[type='number'] { width: 110px; }
+.ep-run { margin-top: 14px; display: inline-flex; align-items: center; gap: 8px; }
+.ep-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 12px; }
+.ep-table th, .ep-table td { border: 1px solid var(--border, #d8e4dd); padding: 6px 8px; text-align: left; }
+.ep-table td.ok { color: #198754; font-weight: 600; }
+.ep-table td.bad { color: #b02a37; font-weight: 600; }
+.ep-audit { font-size: 13px; margin-bottom: 10px; }
+.ep-soft { color: var(--muted, #5c6b63); margin-top: 4px; }
+.ep-log { max-height: 280px; overflow: auto; background: #0f1d17; color: #cfe9dc; padding: 12px; border-radius: 10px; font-size: 12px; white-space: pre-wrap; }
+.spin { animation: ep-spin 1s linear infinite; }
+@keyframes ep-spin { to { transform: rotate(360deg); } }
+@media (max-width: 600px) { .ep-cohort { flex-direction: column; align-items: flex-start; } }

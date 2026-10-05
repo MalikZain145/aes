@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Abasyn Examination System",
+    "slug": "abasyn-exam-scanner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "android": {
+      "package": "pk.edu.abasyn.examscanner",
+      "usesCleartextTraffic": true,
+      "permissions": ["CAMERA", "INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE"]
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "pk.edu.abasyn.examscanner",
+      "infoPlist": {
+        "NSCameraUsageDescription": "The camera is used to scan admit-card QR codes."
+      }
+    },
+    "plugins": [
+      ["expo-camera", { "cameraPermission": "Allow Abasyn Examination System to scan admit-card QR codes." }]
+    ]
+  }
+}

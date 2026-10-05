@@ -1,0 +1,115 @@
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
+import { useAuth } from './context/AuthContext';
+
+import BootScreen from './components/BootScreen';
+import AppLayout from './components/AppLayout';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import Courses from './pages/Courses';
+import Teachers from './pages/Teachers';
+import RoomsLabs from './pages/RoomsLabs';
+import DataImport from './pages/DataImport';
+import ExamPipeline from './pages/ExamPipeline';
+import DateSheets from './pages/DateSheets';
+import ClassTimetable from './pages/ClassTimetable';
+import Attendance from './pages/Attendance';
+import PreviousSemesters from './pages/PreviousSemesters';
+import AdmitCards from './pages/AdmitCards';
+import Reports from './pages/Reports';
+import TimetableViews from './pages/TimetableViews';
+import RegistrationForms from './pages/RegistrationForms';
+import StudentCourses from './pages/StudentCourses';
+import People from './pages/People';
+import StudentPortal from './pages/StudentPortal';
+import FacultyPortal from './pages/FacultyPortal';
+import Constraints from './pages/Constraints';
+import About from './pages/About';
+
+function Protected({ children }) {
+  const { admin, booting } = useAuth();
+  const location = useLocation();
+  if (booting) return <BootScreen />;
+  if (!admin) return <Navigate to="/login" state={{ from: location }} replace />;
+  return children;
+}
+
+// Where each role lands after login / on the index route.
+const HOME_BY_ROLE = { admin: '/dashboard', finance: '/admit-cards', faculty: '/faculty', student: '/student' };
+
+// Restrict a route to specific roles; anyone else is bounced to their own home.
+function Guard({ roles, children }) {
+  const { role } = useAuth();
+  if (roles && !roles.includes(role)) return <Navigate to={HOME_BY_ROLE[role] || '/login'} replace />;
+  return children;
+}
+
+function RoleHome() {
+  const { role } = useAuth();
+  return <Navigate to={HOME_BY_ROLE[role] || '/login'} replace />;
+}
+
+function ComingSoon({ title }) {
+  return (
+    <div style={{ padding: 40, textAlign: 'center', color: '#5c6b63' }}>
+      <h2 style={{ color: '#0f3d2e', marginBottom: 8 }}>{title}</h2>
+      <p>This portal is being set up. Check back shortly.</p>
+    </div>
+  );
+}
+
+export default function App() {
+  const { admin, booting } = useAuth();
+  const location = useLocation();
+
+  return (
+    <>
+      <AnimatePresence>{booting && <BootScreen key="boot" />}</AnimatePresence>
+      {!booting && (
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            <Route
+              path="/login"
+              element={admin ? <Navigate to="/" replace /> : <Login />}
+            />
+            <Route
+              path="/"
+              element={
+                <Protected>
+                  <AppLayout />
+                </Protected>
+              }
+            >
+              <Route index element={<RoleHome />} />
+              {/* Admin (Exam Cell) */}
+              <Route path="dashboard" element={<Guard roles={['admin']}><Dashboard /></Guard>} />
+              <Route path="courses" element={<Guard roles={['admin']}><Courses /></Guard>} />
+              <Route path="teachers" element={<Guard roles={['admin']}><Teachers /></Guard>} />
+              <Route path="rooms-labs" element={<Guard roles={['admin']}><RoomsLabs /></Guard>} />
+              <Route path="import" element={<Guard roles={['admin']}><DataImport /></Guard>} />
+              <Route path="datesheets" element={<Guard roles={['admin']}><DateSheets /></Guard>} />
+              <Route path="exam-engine" element={<Guard roles={['admin']}><ExamPipeline /></Guard>} />
+              <Route path="class-timetable" element={<Guard roles={['admin']}><ClassTimetable /></Guard>} />
+              <Route path="attendance" element={<Guard roles={['admin']}><Attendance /></Guard>} />
+              <Route path="views" element={<Guard roles={['admin']}><TimetableViews /></Guard>} />
+              <Route path="archive" element={<Guard roles={['admin']}><PreviousSemesters /></Guard>} />
+              <Route path="registrations" element={<Guard roles={['admin']}><RegistrationForms /></Guard>} />
+              <Route path="student-courses" element={<Guard roles={['admin']}><StudentCourses /></Guard>} />
+              <Route path="people" element={<Guard roles={['admin']}><People /></Guard>} />
+              <Route path="reports" element={<Guard roles={['admin']}><Reports /></Guard>} />
+              <Route path="constraints" element={<Guard roles={['admin']}><Constraints /></Guard>} />
+              <Route path="about" element={<About />} />
+              {/* Admit cards — Finance GENERATES + EMAILS. Admin only views the
+                  4 download buttons via a strip on its dashboard (no generate). */}
+              <Route path="admit-cards" element={<Guard roles={['finance']}><AdmitCards /></Guard>} />
+              {/* Faculty & Student portals (built in later phases) */}
+              <Route path="faculty" element={<Guard roles={['faculty']}><FacultyPortal /></Guard>} />
+              <Route path="student" element={<Guard roles={['student']}><StudentPortal /></Guard>} />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </AnimatePresence>
+      )}
+    </>
+  );
+}

@@ -1,0 +1,2030 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+admit_cards.py — Abasyn University Islamabad Campus
+====================================================
+Generate per-student EXAMINATION ADMIT CARDS with an automatic, anti-cheating
+SEATING PLAN — better than a manual one, and provably clash-free.
+
+Pipeline
+--------
+1. Read the real student registration report (per student: name, ID, degree,
+   batch, and their registered courses).
+2. Re-use the tested, clash-free datesheet engine (`datesheet.py`) to place
+   every examinable course into a (date, time-slot) — guaranteeing no student
+   ever has two papers at the same time.
+3. Look up each paper's TEACHER from the timetable / course data.
+4. Run the SEATING ALGORITHM: for every exam session, seat two students per
+   bench under the rule
+        - a bench holds 2 students, and
+        - they must be of DIFFERENT degrees, OR (if same degree) a DIFFERENT
+          batch AND a DIFFERENT course,
+        - two students taking the SAME paper are never on the same bench.
+   Students are spread across rooms + labs using each venue's exam capacity
+   (number of benches). The rule is NEVER broken — a bench is left half-filled
+   or overflow is pushed to another venue instead, and every such case is
+   reported.
+5. Render:
+     • a beautiful admit card per student (course table with Sr#, Code, Title,
+       Teacher, Date, Day, Time, Room, Seat),
+     • a room-by-room SEATING PLAN for invigilators,
+     • a machine-readable JSON summary (last stdout line).
+
+Usage
+-----
+    python admit_cards.py --config config.json
+
+config.json keys (all optional unless noted):
+    exam_type        : "mids" | "finals"                 (default mids)
+    start_date       : "YYYY-MM-DD"                       (REQUIRED-ish; today if missing)
+    window_mode      : "by_papers" | "by_days"
+    papers_per_slot  : int   (when by_papers)
+    num_days         : int   (when by_days)
+    program_level    : "Undergraduate" | "Postgraduate"
+    semester         : "Spring" | "Summer" | "Fall"       (taken from the user)
+    year             : int                                (taken from the user)
+    campus_line      : "Abasyn University Islamabad Campus"
+    dataset_xlsx     : path to the student registration report  (REQUIRED)
+    data_json        : path to a DB export (rooms/labs/courses+teachers)
+    timetable_xlsx   : path to a timetable dataset (fallback teacher source)
+    venues           : [ { "name": "I110", "benches": 22, "kind": "room" }, ... ]
+    merge_groups     : [[code, code, ...], ...]
+    exclude_dates    : ["YYYY-MM-DD", ...]
+    out              : output admit-cards PDF path
+    out_seating      : output seating-plan PDF path
+"""
+
+import os
+import re
+import sys
+import json
+import math
+import secrets
+import hmac
+import hashlib
+import argparse
+import random
+from datetime import datetime
+from collections import defaultdict, Counter
+from pathlib import Path
+
+import pandas as pd
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib import colors
+from reportlab.lib.units import cm, mm
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage,
+    KeepTogether, PageBreak,
+)
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.graphics.barcode.qr import QrCodeWidget
+from reportlab.graphics.shapes import Drawing
+from reportlab.lib.utils import ImageReader
+
+
+# Decode the logo ONCE and reuse the reader across every card/sheet — otherwise
+# reportlab re-reads & re-decodes the PNG for all 5,000–10,000 cards (very slow).
+_LOGO_CACHE = {}
+def logo_reader(path):
+    if not path:
+        return None
+    r = _LOGO_CACHE.get(path)
+    if r is None:
+        try:
+            r = ImageReader(path)
+        except Exception:
+            r = None
+        _LOGO_CACHE[path] = r
+    return r
+
+
+def make_qr(url, size_pts):
+    """A scannable QR (vector) sized size_pts × size_pts, usable as a flowable."""
+    qr = QrCodeWidget(url or "")
+    b = qr.getBounds()
+    w = (b[2] - b[0]) or 1
+    h = (b[3] - b[1]) or 1
+    d = Drawing(size_pts, size_pts, transform=[size_pts / w, 0, 0, size_pts / h, 0, 0])
+    d.add(qr)
+    return d
+
+
+def _slot_bounds(slot_label):
+    """'09:00-12:00' -> ('09:00','12:00')."""
+    s = str(slot_label or "")
+    if "-" in s:
+        a, b = s.split("-", 1)
+        return a.strip(), b.strip()
+    return s.strip(), ""
+
+# Re-use the tested datesheet engine (import-safe: main() is guarded).
+import datesheet as ds
+
+HERE = Path(__file__).parent
+
+# ── Palette (shared with the official green datesheet) ───────────────────────
+_DARK_GREEN = colors.HexColor("#0f5132")
+_MID_GREEN  = colors.HexColor("#198754")
+_HEAD_GREEN = colors.HexColor("#14663f")
+_MINT       = colors.HexColor("#d1e7dd")
+_MINT_DEEP  = colors.HexColor("#a3cfbb")
+_BORDER     = colors.HexColor("#94c7ac")
+_GREY_TEXT  = colors.HexColor("#5c6b63")
+_INK        = colors.HexColor("#1c1c1c")
+_ROW_ALT    = colors.HexColor("#f2f8f5")
+
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# STUDENTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def load_students(path: Path) -> list:
+    """
+    Read the student-wise registration report and return one record per student:
+        { sid, name, program, batch, courses:[code...], names:{code:title} }
+    Handles the exact "Course Registration Report" columns:
+        S. No | Student Name | Student ID | Academic Program | Batch Intake |
+        Number of Courses | Courses with Names | Credit Hours
+    """
+    df = pd.read_excel(path)
+    cols = {str(c).lower().strip(): c for c in df.columns}
+
+    col_name  = cols.get("student name") or cols.get("name")
+    col_sid   = cols.get("student id") or cols.get("id")
+    col_prog  = cols.get("academic program") or cols.get("program")
+    col_batch = cols.get("batch intake") or cols.get("batch")
+    col_courses = cols.get("courses with names") or cols.get("courses")
+
+    if not col_courses:
+        raise ValueError(
+            "Student file must have a 'Courses with Names' column "
+            "(the standard Course Registration Report)."
+        )
+
+    students = []
+    seen_sids = set()
+    for _, row in df.iterrows():
+        sid   = ds._norm(row[col_sid]) if col_sid else ""
+        name  = ds._norm(row[col_name]) if col_name else ""
+        prog  = ds._norm(row[col_prog]) if col_prog else ""
+        batch = ds._norm(row[col_batch]) if col_batch else ""
+        raw   = str(row[col_courses] or "")
+        if not sid and not name:
+            continue
+
+        # split "CS313 - Operating Systems - 3.0, MT201 - ... ," into parts
+        import re
+        parts = re.split(r",\s*(?=[A-Za-z]{2,6}[-\s]?\d{3,4}|$)", raw)
+        if len(parts) <= 1:
+            parts = re.split(r"[;\n|]+", raw)
+
+        codes = []
+        names = {}
+        for part in parts:
+            part = ds._norm(part).rstrip(",")
+            if not part:
+                continue
+            code, cname = ds._split_code_and_name(part)
+            if not code:
+                continue
+            if code not in names:
+                codes.append(code)
+                names[code] = cname or code
+
+        # de-dup students by ID (keep the first, richest row)
+        key = sid or f"{name}|{batch}"
+        if key in seen_sids:
+            continue
+        seen_sids.add(key)
+
+        students.append({
+            "sid": sid, "name": name or f"Student {sid}",
+            "program": prog, "batch": batch,
+            "courses": codes, "names": names,
+        })
+    return students
+
+
+def load_students_from_export(data_json_path) -> list:
+    """
+    Build the student list from the DB export's `student_registrations` (written
+    by the backend) instead of an uploaded Excel — so admit cards run straight
+    from the database, no file upload needed. Same shape as load_students().
+    """
+    with open(data_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    regs = data.get("student_registrations", []) or []
+    title_by_code = {}
+    for c in data.get("courses", []):
+        code = ds._extract_course_code(c.get("code") or c.get("fullCode") or "")
+        if code and code not in title_by_code:
+            title_by_code[code] = c.get("name", "")
+
+    students = []
+    seen = set()
+    for r in regs:
+        sid = ds._norm(r.get("student_id") or r.get("studentId") or "")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        codes, names = [], {}
+        for code in (r.get("courses") or []):
+            cu = ds._extract_course_code(code)
+            if cu and cu not in names:
+                codes.append(cu)
+                names[cu] = title_by_code.get(cu, cu)
+        program = ds._norm(r.get("program") or "")
+        batch = ds._norm(r.get("batch") or "")
+        if not program and batch:      # older regs: program folded into batch
+            program = batch
+        students.append({
+            "sid": sid, "name": ds._norm(r.get("name") or "") or f"Student {sid}",
+            "program": program, "batch": batch,
+            "courses": codes, "names": names,
+        })
+    return students
+
+
+def _student_cohort(program: str) -> str:
+    """Classify a student into a seating cohort by their academic program:
+        'pg'    → MS / MPhil / Master / MBA (Postgraduate)
+        'btech' → B.Tech / Engineering Technology
+        'bs'    → everything else (regular Undergraduate)
+    Lets admit cards be generated per cohort so B.Tech gets its OWN seating plan."""
+    p = " " + str(program or "").lower().replace(".", "").replace("-", " ") + " "
+    # NOTE: must stay in sync with generateController `_isPGprog` — a program the
+    # datesheet treats as PG (e.g. "PhD Computing") MUST seat as PG here too, else
+    # its papers are looked up in the wrong cohort's datesheet and dropped.
+    if any(k in p for k in (" ms ", " mphil ", "mphil", " master", " mba ", " msc ",
+                            "postgrad", " pgd ", " phd ", "doctor of philosophy", " dphil ")):
+        return "pg"
+    if ("btech" in p) or (" b tech" in p) or ("engineering technology" in p):
+        return "btech"
+    return "bs"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEACHERS  (code -> teacher name)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Placeholder faculty values that are NOT a person ("no teacher" comes straight from
+# the class-wise report; TBA/TBD/N/A from imports). Shown as blank, never as a name.
+_NO_TEACHER_RE = re.compile(
+    r"^\s*(tba|tbd|tbc|nan|none|null|n/?a|-+|—|–|no\s*teacher|not\s*assigned|unassigned|"
+    r"to\s*be\s*(announced|assigned|decided))\s*\.?\s*$", re.I)
+
+
+def _clean_teacher(t: str) -> str:
+    """
+    Return a human display name from a 'Primary Faculty' cell. Handles
+        'email - CE-71 - Dr. Abdul Shakoor'  -> 'Dr. Abdul Shakoor'
+        'email - Mr. Salman'                 -> 'Mr. Salman'
+        'Mr. Salman'                         -> 'Mr. Salman'
+    (mirrors backend/utils/programMap.extractTeacher).
+    """
+    import re
+    s = ds._norm(t)
+    if not s or _NO_TEACHER_RE.match(s):
+        return ""
+    if "@" in s or " - " in s:
+        parts = [p.strip() for p in s.split(" - ") if p.strip()]
+        for p in reversed(parts):
+            if "@" in p:
+                continue
+            if re.match(r"^[A-Za-z&]+-\d+$", p):   # faculty ID like CE-71
+                continue
+            if len(p) > 2:
+                return p
+        return parts[-1] if parts else ""
+    return s
+
+
+def build_teacher_map(config: dict) -> dict:
+    """
+    Build {course_code: 'Teacher Name'} from the richest source available:
+      1. data_json  (DB export: courses[].teacher)   — preferred
+      2. timetable_xlsx / bundled timetable dataset   — 'Primary Faculty' column
+    When a code has several teachers (sections/batches), the most common
+    non-TBA name wins; up to two distinct names are shown joined by ' / '.
+    """
+    votes = defaultdict(Counter)   # code -> Counter(teacher)
+
+    # ---- source 1: DB export JSON ----
+    dj = config.get("data_json")
+    if dj and Path(dj).exists():
+        try:
+            with open(dj, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for c in (data.get("courses", []) if isinstance(data, dict) else []):
+                code = ds._extract_course_code(c.get("code") or c.get("fullCode") or "")
+                teacher = _clean_teacher(c.get("teacher"))
+                if code and teacher:
+                    votes[code][teacher] += max(1, int(c.get("enrolled") or 1))
+        except Exception:
+            pass
+
+    # ---- source 2: timetable spreadsheet ----
+    tt = config.get("timetable_xlsx")
+    tt_path = Path(tt) if tt else (ds.DATASET_PATH if ds.DATASET_PATH.exists() else None)
+    if (not votes) and tt_path and tt_path.exists():
+        try:
+            df = pd.read_excel(tt_path)
+            cols = {str(c).lower().strip(): c for c in df.columns}
+            col_code = cols.get("code")
+            col_fac  = cols.get("primary faculty") or cols.get("teacher") or cols.get("faculty")
+            if col_code and col_fac:
+                for _, row in df.iterrows():
+                    code = ds._extract_course_code(row[col_code])
+                    teacher = _clean_teacher(row[col_fac])
+                    if code and teacher:
+                        votes[code][teacher] += 1
+        except Exception:
+            pass
+
+    out = {}
+    for code, counter in votes.items():
+        # every section teacher of the course (most-enrolled first, max 3 names)
+        top = [name for name, _ in counter.most_common(3)]
+        out[code] = " / ".join(top)
+    return out
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VENUES  (rooms; each room has an EXAM capacity = total seats, laid out as
+# TWO columns of rows/2 seats each: column "N" and virtual column "NA")
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def load_venues(config: dict) -> list:
+    """
+    Return venues: { name, exam_seats, rows, seats, kind }.
+      exam_seats : the room's exam capacity (students it seats in an exam)
+      rows       : exam_seats // 2  → benches; each bench has seat "N" and "NA"
+    Labs are excluded (the capacity file covers rooms only) unless include_labs.
+    """
+    venues = []
+
+    def add(name, exam_seats, kind):
+        name = ds._norm(name)
+        if not name:
+            return
+        exam_seats = max(2, int(exam_seats or 0))
+        rows = max(1, exam_seats // 2)
+        venues.append({"name": name, "exam_seats": rows * 2, "rows": rows,
+                       "seats": rows * 2, "kind": kind})
+
+    explicit = config.get("venues")
+    if explicit:
+        for v in explicit:
+            es = v.get("examCapacity") or v.get("exam_seats") or v.get("capacity")
+            add(v.get("name"), es, v.get("kind", "room"))
+        return _sort_venues(venues)
+
+    dj = config.get("data_json")
+    if dj and Path(dj).exists():
+        with open(dj, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        rms = data.get("rooms", [])
+        lbs = data.get("labs", [])
+        # If ANY venue is flagged examVenue, exams are RESTRICTED to that set:
+        # only flagged rooms, plus flagged labs (least-priority overflow). Every
+        # other room/lab is excluded — papers never land in an unflagged lab.
+        flagged_rooms = [r for r in rms if r.get("examVenue")]
+        flagged_labs = [l for l in lbs if l.get("examVenue")]
+        restricted = bool(flagged_rooms or flagged_labs)
+        for r in (flagged_rooms if restricted else rms):
+            es = r.get("examCapacity") or r.get("capacity")
+            add(r.get("name"), es, "room")
+        if restricted:
+            for l in flagged_labs:                       # sanctioned overflow labs
+                es = l.get("examCapacity") or l.get("capacity")
+                add(l.get("name"), es, "lab")
+        elif config.get("include_labs"):                 # legacy: no flags set
+            for l in lbs:
+                es = l.get("examCapacity") or l.get("capacity")
+                add(l.get("name"), es, "lab")
+    return _sort_venues(venues)
+
+
+def _sort_venues(venues: list) -> list:
+    # Normal rooms first (smaller ones first so papers SPREAD across many rooms,
+    # 2–3 papers per room). Big halls (the Auditorium) come LAST and only take the
+    # overflow / very large common-course cohorts (3–4 papers). Rooms before labs.
+    HALL = 60   # a venue with >=60 rows (>=120 seats) is a "hall"
+    return sorted(venues, key=lambda v: (
+        0 if v["kind"] == "room" else 1,
+        1 if v["rows"] >= HALL else 0,      # halls last
+        v["rows"], v["name"]))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SCHEDULE  (reuse datesheet engine → course_code -> (date, slot))
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def build_schedule(config: dict):
+    """
+    Run the clash-free datesheet scheduler on the SAME student rosters used for
+    admit cards. Returns:
+        schedule : {(day_i, slot_i): [unit, ...]}
+        dates    : [datetime, ...]
+        slots    : [slot label, ...]
+        exam_type, semester, year, program_level
+    Every unit carries codes/names/students/batches (see datesheet._make_unit).
+    """
+    exam_type = (config.get("exam_type") or "mids").lower()
+    if exam_type not in ("mids", "finals"):
+        exam_type = "mids"
+    slots = ds.MIDS_SLOTS if exam_type == "mids" else ds.FINALS_SLOTS
+
+    start_str = config.get("start_date")
+    start_date = datetime.strptime(start_str, "%Y-%m-%d") if start_str else datetime.today()
+
+    sem_i, year_i = ds.infer_semester_year(start_date)
+    semester = config.get("semester") or sem_i
+    year = int(config.get("year") or year_i)
+    program_level = config.get("program_level") or "Undergraduate"
+
+    # load courses WITH real student rosters (drives clash-free placement)
+    if config.get("dataset_xlsx"):
+        courses = ds.load_courses(Path(config["dataset_xlsx"]))
+    elif config.get("data_json"):
+        courses = ds.load_courses_from_json(Path(config["data_json"]))
+    else:
+        raise FileNotFoundError("No student/course data provided (dataset_xlsx or data_json).")
+    if not courses:
+        raise ValueError("No examinable courses found in the provided data.")
+
+    units = ds.apply_merges(courses, config.get("merge_groups") or [],
+                            force_merges=bool(config.get("force_merges")))
+
+    n_slots = len(slots)
+    total_units = len(units)
+    window_mode = config.get("window_mode") or "by_papers"
+    if window_mode == "by_days":
+        n_days = max(1, int(config.get("num_days") or 7))
+        papers_per_slot = math.ceil(total_units / (n_days * n_slots))
+    else:
+        papers_per_slot = max(1, int(config.get("papers_per_slot") or 0) or 6)
+        n_days = math.ceil(total_units / (papers_per_slot * n_slots))
+
+    dates = ds.get_exam_dates(start_date, n_days, config.get("exclude_dates"))
+    schedule, _unplaced = ds.schedule_units(units, dates, slots, papers_per_slot, force_fit=True)
+    ds.remove_clashes(schedule, slots)
+
+    return {
+        "schedule": schedule, "dates": dates, "slots": slots,
+        "exam_type": exam_type, "semester": semester, "year": year,
+        "program_level": program_level,
+    }
+
+
+def load_schedule_json(path: Path):
+    """
+    Load a datesheet's structured schedule (written by datesheet.export_schedule_json)
+    so admit cards read the EXACT dates/times/semester the datesheet already fixed —
+    no re-scheduling. Returns (course_idx, dates, slots, dmeta).
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    dates = [datetime.strptime(d, "%Y-%m-%d") for d in data.get("dates", [])]
+    slots = data.get("slots", [])
+    course_idx = {}
+    for c in data.get("courses", []):
+        d_i = int(c.get("day_index", 0))
+        s_i = int(c.get("slot_index", 0))
+        try:
+            dt = datetime.strptime(c["date"], "%Y-%m-%d")
+        except Exception:
+            dt = dates[d_i] if d_i < len(dates) else datetime.today()
+        course_idx[c["code"]] = {
+            "date": dt, "day_i": d_i, "slot_i": s_i,
+            "day": c.get("day") or DAY_NAMES[dt.weekday()],
+            "slot_label": c.get("slot") or (slots[s_i] if s_i < len(slots) else ""),
+            "name": c.get("name", ""), "teacher": "",
+        }
+    dmeta = {
+        "exam_type": (data.get("exam_type") or "finals").lower(),
+        "semester": data.get("semester") or "",
+        "year": data.get("year") or "",
+        "program_level": data.get("program_level") or "Undergraduate",
+        "heading": data.get("heading") or "",
+    }
+    return course_idx, dates, slots, dmeta
+
+
+def index_courses(sched_info: dict, teacher_map: dict):
+    """
+    Build code -> { date, day, slot_label, slot_i, day_i, name, teacher }.
+    A course belongs to exactly one cell (clash-free), so this is 1:1 by code.
+    """
+    schedule, dates, slots = sched_info["schedule"], sched_info["dates"], sched_info["slots"]
+    idx = {}
+    for (d_i, s_i), units in schedule.items():
+        for u in units:
+            for code, name in zip(u["codes"], u["names"]):
+                idx[code] = {
+                    "date": dates[d_i], "day_i": d_i, "slot_i": s_i,
+                    "day": DAY_NAMES[dates[d_i].weekday()],
+                    "slot_label": slots[s_i], "name": name,
+                    "teacher": teacher_map.get(code, ""),
+                }
+    return idx
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SEATING ALGORITHM  (two-column, department-separated)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Each room seats `exam_seats` students laid out as TWO columns of rows = seats/2:
+#   • a numeric column  : seats "1","2","3",… (front → back)
+#   • a virtual column  : seats "1A","2A","3A",… beside it
+# A whole column is ONE class group (same program+batch+paper), so a student's
+# batch-mate sits directly BEHIND them (same column). The two columns of a room
+# are chosen so the SEAT-MATE beside you (row i: seat i ↔ seat iA) is from a
+# DIFFERENT DEPARTMENT — or, if that is unavoidable, a different batch — and is
+# NEVER sitting the same paper. Big groups spill column-by-column into the next
+# room; small rooms are used first so papers spread, not pile into one hall.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_DEGREE_PREFIXES = ["doctor of philosophy", "master of philosophy", "doctor of",
+                    "master of", "bachelor of", "associate degree in",
+                    "postgraduate diploma in"]
+
+
+def _dept_of_program(program) -> str:
+    """Student's DEPARTMENT = their program with the degree level stripped, so
+    'BS Computer Science' and 'MS Computer Science' are both 'computer science'
+    (same department), but 'BS Software Engineering' is a different department."""
+    p = re.sub(r"\s+", " ", str(program or "").strip().lower())
+    for pre in _DEGREE_PREFIXES:
+        if p.startswith(pre):
+            return (p[len(pre):].strip() or p)
+    p = re.sub(r"^(bs|b\.?s|ms|m\.?s|be|b\.?e|ba|bba|mba|phd|ph\.?d|md|do|bsc|msc)\b\.?\s*", "", p)
+    return p.strip() or str(program or "").lower()
+
+
+def seat_session(session_students, venues, small_first=False):
+    """
+    session_students : list of { sid, name, program, batch, course }
+    venues           : list of { name, rows, seats, kind }
+    small_first      : True for the Postgraduate (MS) cohort — fills the SMALLEST
+                       rooms first so MS sits in different rooms than the big halls
+                       BS uses, keeping them apart on a shared exam day.
+
+    Seating is done by the exam office's PACKING engine (exam_seating_engine):
+    fewest rooms, each course kept WHOLE where it fits (else split into EQUAL
+    parts), ~2 courses per room (a small 3rd only to top up leftover seats), rooms
+    filled to ~95%. Big halls (Auditorium, rows >= 60) are held in reserve and used
+    only when the normal rooms cannot hold the session.
+
+    Returns:
+        seat_of : { sid: (room, seat_label) }   seat_label like "5" or "5A"
+        placed  : list of { room, row, col('L'/'R'), seat, sid, key }
+        stats   : { attending, seated, solo_benches, overflow_benches, rooms_used }
+    """
+    # ── TWO-STREAM seating (min solo benches) — ported from seating_engine_v2 ──
+    # Per slot: split the courses into two streams LEFT/RIGHT whose student totals
+    # are as EQUAL as possible (subset-sum DP). A course lives ENTIRELY in one stream,
+    # so a bench's left seat "N" and right seat "NA" are ALWAYS different courses.
+    # Rooms are filled LARGEST first; each stream's courses flow bench→bench, room→
+    # room in order; when a course runs out the next course on that side continues.
+    # A local search reorders courses within each stream to keep ~2 (max 3-4) papers
+    # per room and avoid tiny fragments. Solo benches arise ONLY from stream
+    # imbalance (one course > half the slot) — the minimum possible.
+    enr = defaultdict(list)
+    seen = set()
+    for st in session_students:
+        k = (st["sid"], st["course"])
+        if k in seen:
+            continue
+        seen.add(k)
+        enr[st["course"]].append({
+            "sid": st["sid"], "name": st.get("name", ""),
+            "program": st.get("program", ""), "batch": st.get("batch", ""),
+            "course": st["course"],
+        })
+    for c in enr:                                    # stable, deterministic order
+        enr[c].sort(key=lambda s: (str(s.get("batch", "")), str(s.get("sid", ""))))
+
+    # rooms LARGEST first; benches = real capacity/2 (rows). Only as many as needed.
+    rooms = sorted(((v["name"], int(v.get("rows", 0) or 0)) for v in venues
+                    if int(v.get("rows", 0) or 0) > 0), key=lambda x: -x[1])
+    room_names = [n for n, _ in rooms]
+    benches_of = {n: b for n, b in rooms}
+    total = sum(len(v) for v in enr.values())
+    if not enr or not room_names:
+        return ({s["sid"]: ("UNASSIGNED", "-") for c in enr for s in enr[c]}, [],
+                {"attending": len(session_students), "seated": 0, "solo_benches": 0,
+                 "overflow_benches": total, "rooms_used": 0})
+
+    sizes = {c: len(v) for c, v in enr.items()}
+
+    def _balance(sz):
+        tot = sum(sz.values()); half = tot // 2
+        reach = {0: ()}
+        for c, n in sorted(sz.items(), key=lambda x: -x[1]):
+            for s, sub in list(reach.items()):
+                if s + n <= half and (s + n) not in reach:
+                    reach[s + n] = sub + (c,)
+        lset = set(reach[max(reach)])
+        return [c for c in sz if c in lset], [c for c in sz if c not in lset]
+
+    MIN_LAST = 10   # last room gets >= ~10 benches (~20 students); never open for 1-5
+
+    def _limits(need):
+        lim = {}; acc = 0; used = []
+        for rm in room_names:
+            if acc >= need:
+                break
+            lim[rm] = benches_of[rm]; acc += lim[rm]; used.append(rm)
+        if len(used) > 1:
+            last = used[-1]; load = lim[last] - (acc - need); want = min(MIN_LAST, lim[last]); i = 0
+            while load < want and i < 100000:
+                rm = used[i % (len(used) - 1)]
+                if rm == last:
+                    break
+                if lim[rm] > 1:
+                    lim[rm] -= 1; load += 1
+                i += 1
+        return lim
+
+    def _layout(lc, rc):
+        ls = [s for c in lc for s in enr[c]]
+        rs = [s for c in rc for s in enr[c]]
+        lim = _limits(max(len(ls), len(rs)))
+        out = []; li = ri = 0
+        for rm in room_names:
+            if li >= len(ls) and ri >= len(rs):
+                break
+            for b in range(1, lim.get(rm, 0) + 1):
+                if li >= len(ls) and ri >= len(rs):
+                    break
+                if li < len(ls):
+                    out.append({"room": rm, "row": b, "col": "L", "seat": str(b), "stu": ls[li]}); li += 1
+                if ri < len(rs):
+                    out.append({"room": rm, "row": b, "col": "R", "seat": f"{b}A", "stu": rs[ri]}); ri += 1
+        return out, (ls[li:] + rs[ri:])
+
+    def _cost(out):
+        rc = defaultdict(set)
+        for r in out:
+            rc[r["room"]].add(r["stu"]["course"])
+        ns = [len(v) for v in rc.values()]
+        cnt = Counter((r["room"], r["stu"]["course"]) for r in out)
+        tot = Counter(r["stu"]["course"] for r in out)
+        frag = sum(1 for (rm, c), v in cnt.items() if v < 5 and v < tot[c])
+        return sum(max(0, n - 2) ** 2 for n in ns) * 10 + (max(ns) if ns else 0) + frag * 8
+
+    left, right = _balance(sizes)
+    L = sorted(left, key=lambda c: -sizes[c]); Rr = sorted(right, key=lambda c: -sizes[c])
+    best, best_un = _layout(L, Rr); bc = _cost(best)
+    rnd = random.Random(7)
+    for _ in range(3000):                            # local search: min papers/room + fragments
+        l2, r2 = L[:], Rr[:]
+        s = l2 if rnd.random() < 0.5 else r2
+        if len(s) < 2:
+            continue
+        i, j = rnd.sample(range(len(s)), 2)
+        if rnd.random() < 0.5:
+            s[i], s[j] = s[j], s[i]
+        else:
+            s.insert(j, s.pop(i))
+        o, un = _layout(l2, r2); c = _cost(o)
+        if c <= bc:
+            L, Rr, best, best_un, bc = l2, r2, o, un, c
+
+    seat_of = {}; placed = []
+    bench_fill = defaultdict(lambda: [False, False])   # (room,row) -> [left?, right?]
+    for r in best:
+        stu = r["stu"]
+        seat_of[stu["sid"]] = (r["room"], r["seat"])
+        placed.append({"room": r["room"], "row": r["row"], "col": r["col"],
+                       "seat": r["seat"], "sid": stu["sid"],
+                       "key": (_dept_of_program(stu["program"]), stu["course"])})
+        bench_fill[(r["room"], r["row"])][0 if r["col"] == "L" else 1] = True
+    solo = sum(1 for lr in bench_fill.values() if lr[0] ^ lr[1])
+    for s in best_un:
+        seat_of[s["sid"]] = ("UNASSIGNED", "-")
+
+    stats = {
+        "attending": len(session_students),
+        "seated": len(placed),
+        "solo_benches": solo,
+        "overflow_benches": len(best_un),
+        "rooms_used": len({r["room"] for r in best}),
+    }
+    return seat_of, placed, stats
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PDF: styles + logo
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _find_logo():
+    for cand in [
+        HERE.parent / "frontend" / "public" / "abasyn-green.png",
+        HERE.parent / "frontend" / "public" / "logo.png",
+        HERE / "abasyn-green.png",
+    ]:
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def _styles():
+    base = getSampleStyleSheet()
+    S = {}
+    S["campus"] = ParagraphStyle("campus", parent=base["Normal"], fontName="Helvetica-Bold",
+                                 fontSize=14, textColor=_DARK_GREEN, alignment=TA_CENTER, leading=17)
+    S["exam"] = ParagraphStyle("exam", parent=base["Normal"], fontName="Helvetica-Bold",
+                               fontSize=10.5, textColor=_HEAD_GREEN, alignment=TA_CENTER, leading=13)
+    S["cardtitle"] = ParagraphStyle("cardtitle", parent=base["Normal"], fontName="Helvetica-Bold",
+                                    fontSize=9.5, textColor=colors.white, alignment=TA_CENTER, leading=12)
+    S["label"] = ParagraphStyle("label", parent=base["Normal"], fontName="Helvetica",
+                                fontSize=8.2, textColor=_GREY_TEXT, leading=11)
+    S["value"] = ParagraphStyle("value", parent=base["Normal"], fontName="Helvetica-Bold",
+                                fontSize=9.2, textColor=_INK, leading=11)
+    S["th"] = ParagraphStyle("th", parent=base["Normal"], fontName="Helvetica-Bold",
+                             fontSize=7.0, textColor=colors.white, alignment=TA_CENTER, leading=8.5)
+    S["td"] = ParagraphStyle("td", parent=base["Normal"], fontName="Helvetica",
+                             fontSize=7.8, textColor=_INK, leading=9.5)
+    S["tdc"] = ParagraphStyle("tdc", parent=S["td"], alignment=TA_CENTER)
+    S["tdb"] = ParagraphStyle("tdb", parent=S["td"], fontName="Helvetica-Bold")
+    S["foot"] = ParagraphStyle("foot", parent=base["Normal"], fontName="Helvetica",
+                               fontSize=7.2, textColor=_GREY_TEXT, leading=9)
+    S["note"] = ParagraphStyle("note", parent=base["Normal"], fontName="Helvetica-Oblique",
+                               fontSize=6.8, textColor=_GREY_TEXT, leading=8.5)
+    S["autogen"] = ParagraphStyle("autogen", parent=base["Normal"], fontName="Helvetica-Bold",
+                                  fontSize=7.6, textColor=_DARK_GREEN, alignment=TA_CENTER, leading=10)
+    # landscape reference layout
+    S["uni"] = ParagraphStyle("uni", parent=base["Normal"], fontName="Helvetica-Bold",
+                              fontSize=17, textColor=_DARK_GREEN, alignment=TA_CENTER, leading=19)
+    S["admit"] = ParagraphStyle("admit", parent=base["Normal"], fontName="Helvetica-Bold",
+                                fontSize=12.5, textColor=_INK, alignment=TA_CENTER, leading=15)
+    S["examline"] = ParagraphStyle("examline", parent=base["Normal"], fontName="Helvetica-Bold",
+                                   fontSize=10, textColor=_HEAD_GREEN, alignment=TA_CENTER, leading=13)
+    S["reglbl"] = ParagraphStyle("reglbl", parent=base["Normal"], fontName="Helvetica-Bold",
+                                 fontSize=9.5, textColor=_GREY_TEXT, leading=15)
+    S["regval"] = ParagraphStyle("regval", parent=base["Normal"], fontName="Helvetica-Bold",
+                                 fontSize=10.5, textColor=_INK, leading=15)
+    S["qrcap"] = ParagraphStyle("qrcap", parent=base["Normal"], fontName="Helvetica-Bold",
+                                fontSize=6.6, textColor=_MID_GREEN, alignment=TA_CENTER, leading=8)
+    S["accounts"] = ParagraphStyle("accounts", parent=base["Normal"], fontName="Helvetica-BoldOblique",
+                                   fontSize=9, textColor=_INK, alignment=TA_CENTER, leading=12)
+    S["sign"] = ParagraphStyle("sign", parent=base["Normal"], fontName="Helvetica-Bold",
+                               fontSize=9, textColor=_INK, leading=12)
+    return S
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PDF: ONE admit card (a self-contained bordered block)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def build_admit_card(student, rows, meta, S, logo_path, content_w):
+    """
+    LANDSCAPE admit card in the official Abasyn layout:
+      • header: title centred, ABASYN UNIVERSITY logo top-right
+      • left: a scannable QR (where the photo used to be) + Registration/Name/Degree
+      • the course table (kept as-is)
+      • accounts-clearance note, then Account Officer / Controller of Examinations
+    rows: [{ sr, code, title, teacher, date, day, time, room, seat }]
+    """
+    P = Paragraph
+
+    # ---- header: title EXACTLY centred on the page, logo top-right ----
+    admit_line = f"{meta.get('program_level', 'Undergraduate')} Admit Card"
+    exam_line = ", ".join(x for x in [meta.get("exam_label", ""), meta.get("term", "")] if x)
+    title_block = Table([
+        [P("ABASYN UNIVERSITY", S["uni"])],
+        [P(admit_line, S["admit"])],
+        [P(exam_line, S["examline"])],
+    ], colWidths=[content_w - 6.8 * cm])
+    title_block.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    logo_cell = ""
+    if logo_path:
+        try:
+            logo_cell = RLImage(logo_reader(logo_path), width=3.0 * cm, height=2.4 * cm, kind="proportional")
+        except Exception:
+            logo_cell = ""
+    # a left spacer equal to the logo column keeps the centre title perfectly centred
+    header = Table([["", title_block, logo_cell]], colWidths=[3.4 * cm, content_w - 6.8 * cm, 3.4 * cm])
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 0), (1, 0), "CENTER"),
+        ("ALIGN", (2, 0), (2, 0), "RIGHT"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("LINEBELOW", (0, 0), (-1, -1), 1.0, _MID_GREEN),
+    ]))
+
+    # ---- QR (photo position) + registration details ----
+    qr_url = student.get("_qr_url", "")
+    qr = make_qr(qr_url, 2.9 * cm) if qr_url else ""
+    qr_box = Table([[qr], [P("Scan to verify", S["qrcap"])]], colWidths=[3.0 * cm])
+    qr_box.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("BOX", (0, 0), (0, 0), 0.6, _BORDER),
+        ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+
+    def kv(label, value):
+        return [P(label, S["reglbl"]), P(value or "—", S["regval"])]
+    details = Table([
+        kv("Registration No:", student.get("sid")),
+        kv("Name:", student.get("name")),
+        kv("Degree:", student.get("program")),
+        kv("Batch:", student.get("batch")),
+    ], colWidths=[3.6 * cm, content_w - 3.0 * cm - 0.4 * cm - 3.6 * cm])
+    details.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    idband = Table([[qr_box, details]], colWidths=[3.4 * cm, content_w - 3.4 * cm])
+    idband.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+    ]))
+
+    # ---- course table (unchanged columns) ----
+    head = ["SNo", "Course Code", "Course Detail", "Teacher", "Date", "Day", "Time", "Exam Hall", "Seat No"]
+    data = [[P(h, S["th"]) for h in head]]
+    for r in rows:
+        data.append([
+            P(str(r["sr"]), S["tdc"]),
+            P(r["code"], S["tdb"]),
+            P(r["title"], S["td"]),
+            P(r["teacher"] or "—", S["td"]),
+            P(r["date"], S["tdc"]),
+            P(r["day"], S["tdc"]),
+            P(r["time"], S["tdc"]),
+            P(r["room"], S["tdc"]),
+            P(r["seat"], S["tdc"]),
+        ])
+    # landscape → wider columns; Course Detail flexes.
+    col_w = [1.0*cm, 2.4*cm, None, 3.2*cm, 2.6*cm, 1.5*cm, 2.6*cm, 2.4*cm, 1.6*cm]
+    fixed = sum(w for w in col_w if w)
+    col_w = [(content_w - fixed) if w is None else w for w in col_w]
+    tbl = Table(data, colWidths=col_w, repeatRows=1)
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), _HEAD_GREEN),
+        ("GRID", (0, 0), (-1, -1), 0.5, _BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]
+    for i in range(1, len(data)):
+        if i % 2 == 0:
+            style.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
+    tbl.setStyle(TableStyle(style))
+
+    # (The issuance note is drawn at the very bottom of the PAGE — see _footer.)
+    inner = Table(
+        [[header], [idband], [Spacer(1, 4)], [tbl]],
+        colWidths=[content_w],
+    )
+    inner.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return KeepTogether([inner])
+
+
+def render_admit_cards(students_rows, meta, out_path, progress_file=None):
+    """students_rows: list of (student, rows). One LANDSCAPE card per page.
+    If progress_file is given, {done, total} is written as each card is rendered
+    so the UI can show a live 1..N counter."""
+    S = _styles()
+    logo = _find_logo()
+    PAGE = landscape(A4)   # (width, height) with width > height
+    doc = SimpleDocTemplate(
+        out_path, pagesize=PAGE,
+        leftMargin=1.3 * cm, rightMargin=1.3 * cm, topMargin=1.2 * cm, bottomMargin=1.1 * cm,
+        title="Abasyn University — Admit Cards",
+    )
+    content_w = PAGE[0] - 2.6 * cm
+    story = []
+    n = len(students_rows)
+
+    def _write_progress(done):
+        if not progress_file:
+            return
+        try:
+            tmp = progress_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"done": int(done), "total": int(n)}, f)
+            os.replace(tmp, progress_file)   # atomic: readers never see a half file
+        except Exception:
+            pass
+
+    _write_progress(0)   # publish the total up-front (counter target)
+
+    for i, (student, rows) in enumerate(students_rows):
+        story.append(build_admit_card(student, rows, meta, S, logo, content_w))
+        if i != n - 1:
+            story.append(PageBreak())
+    if not story:
+        story.append(Paragraph("No admit cards to generate.", S["value"]))
+
+    def _footer(canvas, doc_):
+        # one card == one page, so the page number is the live "cards made" count
+        _write_progress(getattr(doc_, "page", 0))
+        # issuance note at the very bottom of the page — plain black, no background
+        canvas.saveState()
+        canvas.setFont("Helvetica-BoldOblique", 8.5)
+        canvas.setFillColor(colors.black)
+        canvas.drawCentredString(
+            PAGE[0] / 2, 0.7 * cm,
+            "This system generated admit card is issued with the approval of the "
+            "Finance Office and does not require any signature or stamp.")
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    _write_progress(n)   # ensure it ends exactly at the total
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PDF: SEATING PLAN (per session → per room → student list)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def render_seating_plan(sessions_layout, meta, out_path):
+    """
+    sessions_layout: ordered list of {
+        date, day, slot, rooms: [ {name, rows:[ {bench, seat, sid, name, program, batch, course} ]} ]
+    }
+    """
+    S = _styles()
+    logo = _find_logo()
+    doc = SimpleDocTemplate(
+        out_path, pagesize=A4,
+        leftMargin=1.1 * cm, rightMargin=1.1 * cm, topMargin=1.0 * cm, bottomMargin=1.2 * cm,
+        title="Abasyn University — Seating Plan",
+    )
+    content_w = A4[0] - 2.2 * cm
+    P = Paragraph
+    story = []
+
+    logo_cell = ""
+    if logo:
+        try:
+            logo_cell = RLImage(logo_reader(logo), width=2.2 * cm, height=2.2 * cm, kind="proportional")
+        except Exception:
+            logo_cell = ""
+    header = Table([[P(meta["campus_line"] + "<br/>" + meta["heading"] +
+                       "<br/><font size=9 color='#5c6b63'>Examination Seating Plan (Invigilator Copy)</font>",
+                       S["campus"]), logo_cell]],
+                   colWidths=[content_w - 2.6 * cm, 2.6 * cm])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    story.append(header)
+    story.append(Spacer(1, 0.3 * cm))
+
+    for si, sess in enumerate(sessions_layout):
+        band = Table([[P(f"{sess['day']}, {sess['date']}  —  {sess['slot']}", S["exam"])]],
+                     colWidths=[content_w])
+        band.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _MINT),
+                                   ("BOX", (0, 0), (-1, -1), 0.5, _BORDER),
+                                   ("TOPPADDING", (0, 0), (-1, -1), 3),
+                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+        story.append(band)
+        story.append(Spacer(1, 0.15 * cm))
+
+        for room in sess["rooms"]:
+            story.append(P(f"<b>Room {room['name']}</b> &nbsp; "
+                           f"<font size=7 color='#5c6b63'>({len(room['rows'])} students)</font>",
+                           S["value"]))
+            head = ["Row", "Seat", "Student ID", "Student Name", "Degree / Batch", "Course"]
+            data = [[P(h, S["th"]) for h in head]]
+            for r in room["rows"]:
+                data.append([
+                    P(str(r["row"]), S["tdc"]),
+                    P(r["seat"], S["tdb"]),
+                    P(r["sid"], S["tdc"]),
+                    P(r["name"], S["td"]),
+                    P(f"{r['program']}<br/><font size=6 color='#5c6b63'>{r['batch']}</font>", S["td"]),
+                    P(r["course"] + (f"<br/><font size=6 color='#5c6b63'>{r['time']}</font>"
+                                     if r.get("time") and r.get("time") != sess["slot"] else ""),
+                      S["tdb"]),
+                ])
+            col_w = [1.0*cm, 1.2*cm, 2.2*cm, None, 4.4*cm, 2.4*cm]
+            fixed = sum(w for w in col_w if w)
+            col_w = [(content_w - fixed) if w is None else w for w in col_w]
+            tbl = Table(data, colWidths=col_w, repeatRows=1)
+            st = [
+                ("BACKGROUND", (0, 0), (-1, 0), _HEAD_GREEN),
+                ("GRID", (0, 0), (-1, -1), 0.4, _BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+            for i in range(1, len(data)):
+                if i % 2 == 0:
+                    st.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
+            tbl.setStyle(TableStyle(st))
+            story.append(tbl)
+            story.append(Spacer(1, 0.2 * cm))
+
+        if si != len(sessions_layout) - 1:
+            story.append(PageBreak())
+
+    if not sessions_layout:
+        story.append(P("No sessions to seat.", S["value"]))
+    doc.build(story)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# IDENTIFICATION SHEETS  (one attendance list per ROOM per COURSE/paper)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _seat_key(r):
+    try:
+        return (int(r["row"]), 0 if r["col"] == "L" else 1)
+    except Exception:
+        return (10**9, r.get("seat", ""))
+
+
+def _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date, sess, room_name,
+                    code, title, rows):
+    """Flowables for ONE identification sheet (a single room + single course)."""
+    story = []
+
+    # ── header: title centred, ABASYN UNIVERSITY + logo top-right ──
+    title_html = (f"<b>Identification Sheet</b><br/>"
+                  f"<font size=9 color='#5c6b63'>{term_label}</font>")
+    uni_cell = P("<b>ABASYN</b><br/><font size=8 color='#5c6b63'>UNIVERSITY · Islamabad Campus</font>",
+                 ParagraphStyle("u", parent=S["value"], alignment=TA_RIGHT, fontSize=13))
+    header = Table([["", P(title_html, ParagraphStyle("t", parent=S["campus"], fontSize=15)), uni_cell]],
+                   colWidths=[3.8 * cm, content_w - 7.6 * cm, 3.8 * cm])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("ALIGN", (2, 0), (2, 0), "RIGHT")]))
+    story.append(header)
+    story.append(Spacer(1, 0.25 * cm))
+
+    # ── info block ── (Program = what the admit card is for: Undergraduate/Postgraduate)
+    info = Table([
+        [P(f"<b>Examination Room:</b>&nbsp; {room_name}", S["value"]),
+         P(f"<b>Exam Date:</b>&nbsp; {sess['day']}, {sess['date']}", S["value"])],
+        [P(f"<b>Course:</b>&nbsp; {code} &nbsp; <font color='#5c6b63'>{title}</font>", S["value"]),
+         P(f"<b>Program:</b>&nbsp; {meta.get('program_level', '')}", S["value"])],
+    ], colWidths=[content_w * 0.6, content_w * 0.4])
+    info.setStyle(TableStyle([("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                              ("TOPPADDING", (0, 0), (-1, -1), 2)]))
+    story.append(info)
+    story.append(Spacer(1, 0.2 * cm))
+
+    # ── attendance table ──
+    # Seat + paper time are EXACTLY what the student's admit card shows (both come
+    # from the same seating pass). Course ID is not repeated here (it's shown above).
+    paper_time = sess["slot"]
+    head = ["RegNo", "Student Name", "Seat", "Paper Time", "Section", "Booklet Number", "Attendance"]
+    data = [[P(h, S["th"]) for h in head]]
+    for r in rows:
+        data.append([
+            P(r["sid"], S["tdc"]),
+            P(r["name"], S["td"]),
+            P(str(r["seat"]), S["tdb"]),
+            P(r.get("time") or paper_time, S["tdc"]),
+            P("", S["tdc"]),      # Section — filled by student
+            P("", S["tdc"]),      # Booklet Number — filled by student
+            P("", S["tdc"]),      # Attendance — student signs
+        ])
+    col_w = [2.0 * cm, None, 1.2 * cm, 2.3 * cm, 2.2 * cm, 2.7 * cm, 2.6 * cm]
+    fixed = sum(w for w in col_w if w)
+    col_w = [(content_w - fixed) if w is None else w for w in col_w]
+    tbl = Table(data, colWidths=col_w, repeatRows=1)
+    st = [
+        ("BACKGROUND", (0, 0), (-1, 0), _HEAD_GREEN),
+        ("GRID", (0, 0), (-1, -1), 0.5, _BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 1), (-1, -1), 7), ("BOTTOMPADDING", (0, 1), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+    ]
+    for i in range(1, len(data)):
+        if i % 2 == 0:
+            st.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
+    tbl.setStyle(TableStyle(st))
+    story.append(tbl)
+    story.append(Spacer(1, 0.15 * cm))
+    story.append(P(f"<font size=7.5 color='#5c6b63'>Total students in this list: "
+                   f"{len(rows)} &nbsp;·&nbsp; Room {room_name} &nbsp;·&nbsp; Course {code}</font>", S["foot"]))
+    story.append(Spacer(1, 0.7 * cm))
+
+    # ── invigilator lines (2 mandatory + 1 optional) ──
+    sc = ParagraphStyle("iv", parent=S["value"], alignment=TA_CENTER, fontSize=9)
+    line = "<font size=8 color='#5c6b63'>____________________</font><br/>"
+    invig = Table([[
+        P(line + "<b>Invigilator 1</b>", sc),
+        P(line + "<b>Invigilator 2</b>", sc),
+        P(line + "<b>Invigilator 3</b> <font size=7 color='#8a958d'>(if any)</font>", sc),
+    ]], colWidths=[content_w / 3] * 3)
+    invig.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
+    story.append(invig)
+    story.append(Spacer(1, 0.6 * cm))
+
+    # ── officer / controller signatures ──
+    sig = Table([[
+        P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
+          "<b>Examination Officer</b>", ParagraphStyle("sco", parent=S["value"], alignment=TA_CENTER)),
+        P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
+          "<b>Controller of Examinations</b>", ParagraphStyle("scc", parent=S["value"], alignment=TA_CENTER)),
+    ]], colWidths=[content_w / 2, content_w / 2])
+    sig.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                             ("TOPPADDING", (0, 0), (-1, -1), 6)]))
+    story.append(sig)
+    return story
+
+
+def render_identification_sheets(sessions_layout, meta, code_title, out_path):
+    """One identification / attendance sheet per (room, course) — the physical lists
+    handed to invigilators; students sign against their name."""
+    S = _styles()
+    logo = _find_logo()
+    doc = SimpleDocTemplate(
+        out_path, pagesize=A4,
+        leftMargin=1.4 * cm, rightMargin=1.4 * cm, topMargin=1.0 * cm, bottomMargin=1.2 * cm,
+        title="Abasyn University — Identification Sheets",
+    )
+    content_w = A4[0] - 2.8 * cm
+    P = Paragraph
+    story = []
+    gen_date = datetime.now().strftime("%a, %d %b %Y")
+    term_label = meta.get("exam_label") or "Examination"
+    first = True
+    for sess in sessions_layout:
+        for room in sess["rooms"]:
+            bycourse = defaultdict(list)
+            for r in room["rows"]:
+                bycourse[r["course"]].append(r)
+            for code in sorted(bycourse):
+                rows = sorted(bycourse[code], key=_seat_key)
+                if not first:
+                    story.append(PageBreak())
+                first = False
+                story += _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date,
+                                         sess, room["name"], code, code_title.get(code, ""), rows)
+    if first:
+        story.append(P("No students to list.", S["value"]))
+    doc.build(story)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# INVIGILATION DUTY ROSTER  (teachers assigned per room per session)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _is_auditorium(name):
+    return "audit" in str(name).lower()
+
+
+def _person_key(name):
+    """Comparable identity for a teacher name: drop titles/punctuation/case, so
+    'Dr. Abdul Shakoor' == 'Abdul Shakoor' == 'dr abdul  shakoor'."""
+    n = re.sub(r"[^a-z ]+", " ", str(name or "").lower())
+    n = re.sub(r"\b(dr|mr|mrs|ms|miss|engr|prof|professor|sir)\b", " ", n)
+    return re.sub(r"\s+", "", n)
+
+
+def build_course_teachers(teacher_map):
+    """code -> {person_key, ...} from the 'A / B' teacher strings."""
+    out = defaultdict(set)
+    for code, t in (teacher_map or {}).items():
+        for part in re.split(r"\s*[/&,]\s*", str(t or "")):
+            k = _person_key(part)
+            if k and k != "tba":
+                out[str(code).upper()].add(k)
+    return out
+
+
+def build_all_course_teachers(config, teacher_map):
+    """code -> {person_key} from EVERY teacher of EVERY section of the course.
+    (teacher_map keeps only the top 2 names per code for display — e.g. CS210 has 3
+    section teachers — so a conflict-of-interest check built from it missed the 3rd.)"""
+    out = build_course_teachers(teacher_map)
+    dj = config.get("data_json")
+    if dj and Path(dj).exists():
+        try:
+            with open(dj, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for c in (data.get("courses", []) if isinstance(data, dict) else []):
+                code = ds._extract_course_code(c.get("code") or c.get("fullCode") or "")
+                for part in re.split(r"\s*[/&,]\s*", _clean_teacher(c.get("teacher")) or ""):
+                    k = _person_key(part)
+                    if code and k and k != "tba":
+                        out[code.upper()].add(k)
+        except Exception:
+            pass
+    return out
+
+
+def assign_invigilators(sessions_layout, pool, exclude_by_session=None,
+                        max_per_day=2, exclude_day_load=None, course_teachers=None):
+    """Balanced, clash-free invigilation assignment.
+      • invigilators scale with headcount (~1 per 25 students, minimum 2), so a
+        big hall isn't under-staffed and a near-empty one isn't over-staffed,
+      • no teacher invigilates two rooms in the SAME session — within THIS roster
+        AND across other cohorts' rosters (exclude_by_session: 'date|slot' → set
+        of names already on duty elsewhere at that time),
+      • no teacher does more than `max_per_day` duties on ONE day — counting duties
+        in THIS roster AND those already assigned in other cohorts' rosters
+        (exclude_day_load: name → {date → count}),
+      • duty load is spread evenly across the whole faculty pool.
+    Returns per session: [ (room_name, n_students, n_papers, [invigilators...]) ]."""
+    pool = [t for t in pool if t and str(t).upper() != "TBA"]
+    if not pool:
+        pool = ["(assign teacher)"]
+    exclude_by_session = exclude_by_session or {}
+    exclude_day_load = exclude_day_load or {}
+    load = Counter()
+    day_load = defaultdict(Counter)          # date -> teacher -> duties that day
+    # seed with other cohorts' per-day duty counts so the ≤max_per_day cap holds
+    # across BS / BTech / MS, not just within one roster.
+    for name, days in exclude_day_load.items():
+        for d, n in (days or {}).items():
+            day_load[d][name] += int(n)
+    out = []
+    for sess in sessions_layout:
+        # teachers already on duty in ANOTHER cohort's roster at this date+slot
+        date = sess.get('date', '')
+        skey = f"{date}|{sess.get('slot', '')}"
+        used = set(exclude_by_session.get(skey, []) or [])
+        dl = day_load[date]
+        # serve the biggest rooms first so they get their full quota
+        rooms_sorted = sorted(sess["rooms"],
+                              key=lambda r: (0 if _is_auditorium(r["name"]) else 1, -len(r["rows"])))
+        chosen = {}
+        for room in rooms_sorted:
+            # Scale invigilators with the room's headcount (~1 per 25 students),
+            # minimum 2 — so Main Hall-B (74) gets 3 and a near-empty Auditorium
+            # gets 2 instead of a blanket 4.
+            n_stu = len(room["rows"])
+            need = max(2, (n_stu + 24) // 25)
+            assigned = []
+            # CONFLICT OF INTEREST (anti-cheating): a teacher NEVER invigilates a
+            # room in which a paper they TEACH is being written.
+            banned = set()
+            for _c in {r["course"] for r in room["rows"]}:
+                banned |= (course_teachers or {}).get(str(_c).upper(), set())
+            # candidates: not already on duty this session, and under the daily cap;
+            # least-loaded first (fewest same-day duties, then fewest total).
+            cands = [t for t in pool if t not in used and dl[t] < max_per_day
+                     and _person_key(t) not in banned]
+            for t in sorted(cands, key=lambda x: (dl[x], load[x], x)):
+                assigned.append(t)
+                used.add(t)
+                load[t] += 1
+                dl[t] += 1
+                if len(assigned) >= need:
+                    break
+            # if the daily cap starved the room (rare), fall back to least-loaded
+            # available teachers so a room is never left unstaffed.
+            if len(assigned) < need:
+                for t in sorted((x for x in pool if x not in used and _person_key(x) not in banned),
+                                key=lambda x: (load[x], x)):
+                    assigned.append(t)
+                    used.add(t)
+                    load[t] += 1
+                    dl[t] += 1
+                    if len(assigned) >= need:
+                        break
+            chosen[room["name"]] = assigned
+        rooms_out = []
+        for room in sess["rooms"]:                     # keep the plan's room order
+            n_students = len(room["rows"])
+            papers = len({r["course"] for r in room["rows"]})
+            rooms_out.append((room["name"], n_students, papers, chosen.get(room["name"], [])))
+        out.append(rooms_out)
+    return out
+
+
+def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_session=None,
+                        max_per_day=2, exclude_day_load=None, course_teachers=None,
+                        roster_out=None):
+    S = _styles()
+    logo = _find_logo()
+    doc = SimpleDocTemplate(
+        out_path, pagesize=A4,
+        leftMargin=1.1 * cm, rightMargin=1.1 * cm, topMargin=1.0 * cm, bottomMargin=1.2 * cm,
+        title="Abasyn University — Invigilation Duty Roster",
+    )
+    content_w = A4[0] - 2.2 * cm
+    P = Paragraph
+    story = []
+    gen_date = datetime.now().strftime("%a, %d %b %Y")
+
+    logo_cell = ""
+    if logo:
+        try:
+            logo_cell = RLImage(logo_reader(logo), width=2.2 * cm, height=2.2 * cm, kind="proportional")
+        except Exception:
+            logo_cell = ""
+    header = Table([[P(meta["campus_line"] + "<br/>" + meta["heading"] +
+                       "<br/><font size=9 color='#5c6b63'>Invigilation Duty Roster</font>",
+                       S["campus"]), logo_cell]],
+                   colWidths=[content_w - 2.6 * cm, 2.6 * cm])
+    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
+    story.append(header)
+    story.append(Spacer(1, 0.3 * cm))
+
+    roster = assign_invigilators(sessions_layout, pool, exclude_by_session,
+                                 max_per_day=max_per_day, exclude_day_load=exclude_day_load,
+                                 course_teachers=course_teachers)
+    if roster_out is not None:
+        roster_out.extend(roster)
+    for si, sess in enumerate(sessions_layout):
+        band = Table([[P(f"{sess['day']}, {sess['date']}  —  {sess['slot']}", S["exam"])]],
+                     colWidths=[content_w])
+        band.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _MINT),
+                                   ("BOX", (0, 0), (-1, -1), 0.5, _BORDER),
+                                   ("TOPPADDING", (0, 0), (-1, -1), 3),
+                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+        story.append(band)
+        story.append(Spacer(1, 0.15 * cm))
+
+        head = ["Room", "Students", "Papers", "Invigilator(s)", "Signature"]
+        data = [[P(h, S["th"]) for h in head]]
+        for room_name, n_students, papers, invs in roster[si]:
+            names_html = "<br/>".join(f"{i+1}. {n}" for i, n in enumerate(invs)) or "—"
+            data.append([
+                P(f"<b>{room_name}</b>", S["tdb"]),
+                P(str(n_students), S["tdc"]),
+                P(str(papers), S["tdc"]),
+                P(names_html, S["td"]),
+                P("", S["td"]),
+            ])
+        col_w = [2.6 * cm, 1.8 * cm, 1.6 * cm, None, 4.6 * cm]
+        fixed = sum(w for w in col_w if w)
+        col_w = [(content_w - fixed) if w is None else w for w in col_w]
+        tbl = Table(data, colWidths=col_w, repeatRows=1)
+        st = [
+            ("BACKGROUND", (0, 0), (-1, 0), _HEAD_GREEN),
+            ("GRID", (0, 0), (-1, -1), 0.4, _BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 1), (-1, -1), 6), ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
+        ]
+        for i in range(1, len(data)):
+            if i % 2 == 0:
+                st.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
+        tbl.setStyle(TableStyle(st))
+        story.append(tbl)
+        story.append(Spacer(1, 0.5 * cm))
+
+        sig = Table([[
+            P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
+              "<b>Examination Officer</b>", ParagraphStyle("sc", parent=S["value"], alignment=TA_CENTER)),
+            P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
+              "<b>Controller of Examinations</b>", ParagraphStyle("sc2", parent=S["value"], alignment=TA_CENTER)),
+        ]], colWidths=[content_w / 2, content_w / 2])
+        sig.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
+        story.append(sig)
+        story.append(P(f"<font size=7 color='#8a958d'>Generated: {gen_date}</font>",
+                       ParagraphStyle("g", parent=S["foot"], alignment=TA_RIGHT)))
+
+        if si != len(sessions_layout) - 1:
+            story.append(PageBreak())
+
+    if not sessions_layout:
+        story.append(P("No sessions to invigilate.", S["value"]))
+    doc.build(story)
+
+    # Return the roster keyed by session AND per-teacher-per-day duty counts so the
+    # caller can (a) store them and (b) feed them to another cohort's roster as
+    # exclude_by_session (no double-booking) + exclude_day_load (≤ max_per_day/day).
+    by_session = {}
+    day_load = defaultdict(lambda: defaultdict(int))   # name -> date -> duties
+    for si, sess in enumerate(sessions_layout):
+        date = sess.get('date', '')
+        skey = f"{date}|{sess.get('slot', '')}"
+        names = []
+        for _room, _n, _p, invs in roster[si]:
+            names.extend(invs)
+            for nm in invs:
+                day_load[nm][date] += 1
+        by_session.setdefault(skey, [])
+        for n in names:
+            if n not in by_session[skey]:
+                by_session[skey].append(n)
+    day_load = {nm: dict(days) for nm, days in day_load.items()}
+    return by_session, day_load
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ORCHESTRATION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def run(config: dict) -> dict:
+    campus_line = config.get("campus_line") or "Abasyn University Islamabad Campus"
+    teacher_map = build_teacher_map(config)
+
+    # 1) resolve the exam schedule.
+    #    UNIFIED mode: `datesheets_by_cohort` = {cohort: schedule.json} seats ALL
+    #    programs TOGETHER — one global seating so rooms/benches are shared across
+    #    BS/BTech/MS (a bench partner may be any cohort, always a DIFFERENT paper).
+    #    Each student's paper time comes from THEIR OWN cohort's datesheet (a shared
+    #    code like SS121 sits at each program's own slot). Otherwise: one datesheet
+    #    (per-cohort batch) or an internally-built schedule.
+    idx_by_cohort = None
+    unified = False
+    _dbc = config.get("datesheets_by_cohort") or {}
+    if _dbc:
+        idx_by_cohort = {}
+        _dates = {}
+        _slots = []
+        course_idx = {}
+        _dm0 = None
+        for coh, p in _dbc.items():
+            if not p or not Path(p).exists():
+                continue
+            ci, d, s, dm = load_schedule_json(Path(p))
+            idx_by_cohort[str(coh).lower()] = ci
+            _dm0 = _dm0 or dm
+            for code, info in ci.items():
+                course_idx.setdefault(code, info)   # merged view (cell-level fields)
+            for dt in d:
+                _dates[dt.strftime("%Y-%m-%d")] = dt
+            for sl in s:
+                if sl not in _slots:
+                    _slots.append(sl)
+        if not idx_by_cohort:
+            raise ValueError("No valid datesheets provided for unified seating.")
+        dates = [_dates[k] for k in sorted(_dates)]
+        def _smin(lbl):
+            m = re.match(r'\s*(\d{1,2}):(\d{2})', str(lbl or ''))
+            if not m:
+                return 9999
+            h, mm = int(m.group(1)), int(m.group(2))
+            return (h + 12 if h < 8 else h) * 60 + mm
+        slots = sorted(_slots, key=_smin)
+        exam_type = _dm0["exam_type"]
+        semester, year = _dm0["semester"], _dm0["year"]
+        program_level = "Undergraduate"
+        heading = ("Abasyn University Islamabad Campus — "
+                   + ("Mid Term" if exam_type == "mids" else "Final Term")
+                   + f" Examination{(' ' + str(semester)) if semester else ''}{(' ' + str(year)) if year else ''}")
+        unified = True
+    elif config.get("datesheet_json") and Path(config["datesheet_json"]).exists():
+        course_idx, dates, slots, dmeta = load_schedule_json(Path(config["datesheet_json"]))
+        exam_type = dmeta["exam_type"]
+        semester, year = dmeta["semester"], dmeta["year"]
+        program_level = dmeta["program_level"]
+        heading = dmeta["heading"] or ds.build_heading(program_level, exam_type, semester, year)
+    else:
+        sched_info = build_schedule(config)
+        dates, slots = sched_info["dates"], sched_info["slots"]
+        exam_type = sched_info["exam_type"]
+        semester, year = sched_info["semester"], sched_info["year"]
+        program_level = sched_info["program_level"]
+        heading = ds.build_heading(program_level, exam_type, semester, year)
+        course_idx = index_courses(sched_info, teacher_map)
+
+    # attach teacher names (datesheet-json path leaves them blank)
+    # Unified mode keeps a SEPARATE info dict per cohort (a shared code like SS121
+    # sits at each program's own slot) — fill those too, else B.Tech/MS copies of a
+    # shared course print a blank teacher on admit cards and envelope tags.
+    _all_infos = list(course_idx.items())
+    for _ci in (idx_by_cohort or {}).values():
+        _all_infos.extend(_ci.items())
+    for code, info in _all_infos:
+        if not info.get("teacher"):
+            info["teacher"] = teacher_map.get(code, "")
+
+    exam_label = "Mid Term Examination" if exam_type == "mids" else "Final Term Examination"
+    term = " ".join(str(x) for x in [semester, year] if x).strip()
+    meta = {
+        "campus_line": campus_line, "heading": heading, "exam_type": exam_type,
+        "program_level": program_level or "Undergraduate",
+        "exam_label": exam_label, "term": term,
+    }
+
+    # 3) students — from an uploaded Excel if given, else straight from the DB
+    #    export's student_registrations (no file upload needed).
+    if config.get("dataset_xlsx") and Path(config["dataset_xlsx"]).exists():
+        students = load_students(Path(config["dataset_xlsx"]))
+    elif config.get("data_json") and Path(config["data_json"]).exists():
+        students = load_students_from_export(config["data_json"])
+        if not students:
+            raise ValueError("No student registrations in the database. Import the registration report under Import Data first.")
+    else:
+        raise FileNotFoundError("No student data: upload a registration file or import it under Import Data.")
+    # Cohort filter — a SINGLE-cohort batch keeps only that cohort's students.
+    # UNIFIED mode keeps EVERYONE (all programs seated together).
+    cohort = str(config.get("cohort") or "").lower()
+    if not unified and cohort in ("bs", "btech", "pg"):
+        before = len(students)
+        students = [s for s in students if _student_cohort(s.get("program")) == cohort]
+        print(f"[admit] cohort={cohort}: kept {len(students)}/{before} students", file=sys.stderr)
+    elif unified:
+        print(f"[admit] UNIFIED seating: {len(students)} students across all cohorts", file=sys.stderr)
+
+    # 4) venues
+    venues = load_venues(config)
+    if not venues:
+        raise ValueError("No exam venues (rooms/labs) available. Provide 'venues' or a 'data_json'.")
+
+    # 5) figure out, per student, which of their courses have a scheduled paper
+    #    and collect per-session attendance.
+    # A "cell" is now keyed by the paper's REAL (date, slot-label) — NOT the
+    # datesheet's (day_index, slot_index). When several datesheets are merged
+    # (e.g. B.Tech + shared gen-ed), their indices collide but their real dates
+    # do not, so this is what keeps every paper on its true date/time and makes
+    # a genuine same-slot clash visible instead of hiding it.
+    def _cell_of(info):
+        return (info["date"].strftime("%Y-%m-%d"), info["slot_label"] or "")
+
+    # In UNIFIED mode a student's paper time comes from THEIR OWN cohort's datesheet
+    # (so a shared code like SS121 sits at each program's own slot); otherwise the
+    # single merged index is used.
+    def _info_for(st, code):
+        if unified:
+            return (idx_by_cohort.get(_student_cohort(st.get("program")), {}) or {}).get(code)
+        return course_idx.get(code)
+
+    session_attendance = defaultdict(list)   # (date,slot) -> [ {sid, program, batch, course} ]
+    student_papers = {}                       # sid -> [ (code, cell) ] scheduled only
+    clashes = []                              # students with 2+ papers in one (date,slot)
+    for st in students:
+        papers = []
+        cell_courses = defaultdict(list)      # cell -> [codes] for this student
+        seen_codes = set()                    # de-dup a student's own course list
+        for code in st["courses"]:
+            # A student is seated ONCE per course — never two seats for one paper
+            # even if the registration lists the code twice (duplicate enrollment).
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            info = _info_for(st, code)
+            if not info:
+                continue  # excluded (FYP/internship) or not examinable
+            cell = _cell_of(info)
+            papers.append((code, cell, info))
+            cell_courses[cell].append(code)
+            session_attendance[cell].append({
+                "sid": st["sid"], "program": st["program"],
+                "batch": st["batch"], "course": code,
+            })
+        for cell, codes in cell_courses.items():
+            if len(codes) > 1:                # same student, two papers at once
+                clashes.append({
+                    "sid": st["sid"], "name": st.get("name", ""),
+                    "program": st.get("program", ""),
+                    "date": cell[0], "slot": cell[1], "courses": codes,
+                })
+        if papers:
+            student_papers[st["sid"]] = papers
+    if clashes:
+        print(f"[admit] WARNING: {len(clashes)} student-paper clash(es) (same date+slot)", file=sys.stderr)
+
+    # 6) seat every session; build seat_of[(sid, cell)] and per-room layout.
+    #    A physical seating session = one DATE + one time window. Cells (papers)
+    #    on the same date whose time windows OVERLAP are seated in ONE allocation,
+    #    so a main paper and a BTech paper running at the same time can never be
+    #    printed on the same physical seat. They may share a bench — different
+    #    papers, so the anti-cheating rule still holds. The seating plan / ID
+    #    sheets / roster are built from these real dates, so their dates are right.
+    def _t2m(t):
+        m = re.match(r'\s*(\d{1,2}):(\d{2})', str(t or ''))
+        if not m:
+            return 0
+        h, mm = int(m.group(1)), int(m.group(2))
+        if h < 8:      # 01:00–07:00 are afternoon/evening
+            h += 12
+        return h * 60 + mm
+
+    def _m2t(mn):
+        h, m = mn // 60, mn % 60
+        hh = h - 12 if h > 12 else h
+        return f"{hh:02d}:{m:02d}"
+
+    # cell -> (date, start_min, end_min). cell_key is "YYYY-MM-DD|slot-label".
+    # Built from EVERY cohort's papers (a shared code sits at a different cell per
+    # program), so every attended session gets a span even in unified mode.
+    _all_infos = []
+    if unified:
+        for _ci in idx_by_cohort.values():
+            _all_infos.extend(_ci.values())
+    else:
+        _all_infos = list(course_idx.values())
+    cell_span, cell_key = {}, {}
+    for info in _all_infos:
+        cell = _cell_of(info)
+        if cell in session_attendance and cell not in cell_span:
+            a, b = _slot_bounds(info["slot_label"])
+            cell_span[cell] = (info["date"].date(), _t2m(a), _t2m(b))
+            cell_key[cell] = f"{info['date'].strftime('%Y-%m-%d')}|{info['slot_label']}"
+
+    # Rooms the OTHER program level (MS↔BS) already uses at a given (date, slot) —
+    # excluded here so a shared day never seats both levels in the same room.
+    exclude_by_session = config.get("exclude_rooms_by_session") or {}
+
+    # union cells sharing a date + overlapping time window
+    cells = list(session_attendance.keys())
+    parent = {c: c for c in cells}
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    by_date = defaultdict(list)
+    for c in cells:
+        if c in cell_span:
+            by_date[cell_span[c][0]].append(c)
+    for _dt, lst in by_date.items():
+        for i in range(len(lst)):
+            for j in range(i + 1, len(lst)):
+                _, s1, e1 = cell_span[lst[i]]
+                _, s2, e2 = cell_span[lst[j]]
+                if s1 < e2 and s2 < e1:            # overlap → same physical session
+                    parent[_find(lst[i])] = _find(lst[j])
+    groups = defaultdict(list)
+    for c in cells:
+        groups[_find(c)].append(c)
+
+    seat_of = {}                              # (sid, cell) -> (room, seat)
+    sessions_layout = []
+    seating_report = {"solo_benches": 0, "overflow_benches": 0, "sessions": []}
+    name_of = {st["sid"]: st["name"] for st in students}
+    # Postgraduate (MS) cohort fills the smallest rooms first, so it lands in
+    # different rooms than the big halls the Undergraduate (BS) exam uses.
+    # Big rooms filled first (small_first=False). Unified mode always packs big→small
+    # so cohorts share halls; only a standalone MS-only batch keeps small-first.
+    _small_first = (not unified) and ("post" in str(meta.get("program_level", "")).lower())
+
+    # Physical sessions in TRUE chronological order (date, then real start time).
+    # Sorting the raw (date, "HH:MM-HH:MM") keys put "01:00-03:00" (afternoon)
+    # before "09:00-12:00" (morning) in the seating plan / ID sheets / roster.
+    def _group_order(gid):
+        gc = groups[gid]
+        return (cell_span[gc[0]][0], min(cell_span[c][1] for c in gc), gid)
+
+    # ROOM TURNOVER: a room that hosts a session must be empty for at least
+    # `room_turnover_min` minutes before the next session in it starts (students
+    # leave, desks are cleared, the next group is seated). A 01:00-03:00 paper and
+    # a 03:00-04:30 paper can therefore never share a room. Falls back to every
+    # venue only if the rule would leave the session without enough seats.
+    turnover = int(config.get("room_turnover_min", 30) or 0)
+    room_free_at = {}                     # (date, room) -> minute the room frees up
+    turnover_relaxed = []
+
+    for gid in sorted(groups.keys(), key=_group_order):
+        gcells = groups[gid]
+        attendees = []
+        for c in gcells:
+            for a in session_attendance[c]:
+                a2 = dict(a); a2["_cell"] = c   # remember which (date,slot) this seat is for
+                attendees.append(a2)
+        # Drop rooms the other level already occupies for this date/slot (but
+        # never leave zero venues — fall back to all rooms if exclusion emptied it).
+        # In UNIFIED mode this map is empty (all cohorts share rooms by design).
+        _excl = set()
+        for c in gcells:
+            for rm in exclude_by_session.get(cell_key.get(c, ""), []):
+                _excl.add(rm)
+        _venues = [v for v in venues if v["name"] not in _excl]
+        if not _venues:
+            _venues = venues
+        _gdate0 = cell_span[gcells[0]][0]
+        _gstart = min(cell_span[c][1] for c in gcells)
+        _gend = max(cell_span[c][2] for c in gcells)
+        if turnover > 0:
+            _free = [v for v in _venues
+                     if room_free_at.get((_gdate0, v["name"]), -10**6) + turnover <= _gstart]
+            if sum(v["seats"] for v in _free) >= len(attendees):
+                _venues = _free
+            else:
+                turnover_relaxed.append(f"{_gdate0} {_gstart//60:02d}:{_gstart%60:02d}")
+        seat_map, placed, stats = seat_session(attendees, _venues, small_first=_small_first)
+        for p in placed:
+            if p["room"] != "UNASSIGNED":
+                room_free_at[(_gdate0, p["room"])] = max(room_free_at.get((_gdate0, p["room"]), 0), _gend)
+        # each attendee sits ONE paper → key its seat by that paper's own cell
+        for a in attendees:
+            pos = seat_map.get(a["sid"])
+            if pos:
+                seat_of[(a["sid"], a["_cell"])] = pos
+        seating_report["solo_benches"] += stats["solo_benches"]
+        seating_report["overflow_benches"] += stats["overflow_benches"]
+
+        gdate = cell_span[gcells[0]][0]
+        smin = min(cell_span[c][1] for c in gcells)
+        emax = max(cell_span[c][2] for c in gcells)
+        slot_label = f"{_m2t(smin)}-{_m2t(emax)}"
+
+        by_room = defaultdict(list)
+        sid_meta = {a["sid"]: a for a in attendees}
+        for p in placed:
+            if p["room"] == "UNASSIGNED":
+                continue
+            a = sid_meta.get(p["sid"], {})
+            by_room[p["room"]].append({
+                "row": p["row"], "col": p["col"], "seat": p["seat"], "sid": p["sid"],
+                "name": name_of.get(p["sid"], ""), "program": a.get("program", ""),
+                "batch": a.get("batch", ""), "course": a.get("course", ""),
+                # the student's OWN paper time (an overlapping B.Tech 09:00-10:30
+                # paper co-seated in a 09:00-12:00 session keeps its 1.5 h time)
+                "time": (a.get("_cell") or ("", ""))[1] or slot_label,
+            })
+        rooms_layout = []
+        for room in sorted(by_room.keys()):
+            rows = sorted(by_room[room], key=lambda r: (r["row"], 0 if r["col"] == "L" else 1))
+            rooms_layout.append({"name": room, "rows": rows})
+        sessions_layout.append({
+            "date": gdate.strftime("%d-%b-%Y"),
+            "day": DAY_NAMES[gdate.weekday()],
+            "slot": slot_label, "rooms": rooms_layout,
+        })
+        seating_report["sessions"].append({
+            "date": gdate.strftime("%d-%b-%Y"), "slot": slot_label,
+            "attending": stats["attending"], "benches_used": stats["seated"],
+            "solo_benches": stats["solo_benches"], "overflow_benches": stats["overflow_benches"],
+        })
+
+    # 6b) UNSEATED GUARD — a scheduled paper with NO seat means the venues ran out
+    # of capacity for that session. The engine must NEVER silently drop a student:
+    # surface it loudly and return it so the backend can fail/flag instead of issuing
+    # an admit card with a blank room. (With unified seating and all rooms available,
+    # this should be 0; if it isn't, the exam office needs more/larger venues.)
+    unseated_list = []
+    for st in students:
+        for (code, cell, info) in (student_papers.get(st["sid"]) or []):
+            if (st["sid"], cell) not in seat_of:
+                unseated_list.append({"sid": st["sid"], "name": st.get("name", ""),
+                                      "program": st.get("program", ""), "course": code,
+                                      "date": cell[0], "slot": cell[1]})
+    if unseated_list:
+        print(f"[admit] ERROR: {len(unseated_list)} scheduled paper(s) could NOT be "
+              f"seated (venue capacity exceeded) — e.g. "
+              + "; ".join(f"{u['sid']}/{u['course']}@{u['date']} {u['slot']}" for u in unseated_list[:5]),
+              file=sys.stderr)
+
+    # 7) build admit-card rows per student (+ QR token + verify record)
+    base_url = (config.get("base_url") or "").rstrip("/")
+    fee_default = config.get("fee_default") or "Paid"
+    # Backend-supplied secret for signing QR tokens (bytes); empty for standalone.
+    _verify_secret = (config.get("verify_secret") or "").encode()
+    # OUTPUT filter — the SEATING above is ALWAYS global (all programs, so shared
+    # rooms/benches are conflict-free and anti-cheating holds across cohorts), but a
+    # per-cohort batch issues admit cards + QR records for ONLY that cohort's
+    # students. Because the seating is deterministic and computed over EVERYONE,
+    # generating BS now and MS later gives each the SAME seats → never a clash, no
+    # matter the order or how many times you regenerate.
+    output_cohort = str(config.get("output_cohort") or "").lower()
+    if output_cohort not in ("bs", "btech", "pg"):
+        output_cohort = ""
+    students_rows = []
+    verify_students = []
+    cards = 0
+    output_students = 0
+    for st in students:
+        if output_cohort and _student_cohort(st.get("program")) != output_cohort:
+            continue
+        output_students += 1
+        papers = student_papers.get(st["sid"])
+        if not papers:
+            continue
+        # sort a student's papers chronologically by REAL date + start time
+        papers_sorted = sorted(papers, key=lambda p: (p[2]["date"], _t2m(_slot_bounds(p[2]["slot_label"])[0])))
+        rows = []
+        exams = []
+        for i, (code, cell, info) in enumerate(papers_sorted, start=1):
+            pos = seat_of.get((st["sid"], cell))
+            if pos:
+                room_txt, seat_txt = pos          # (room, seat_label)
+            else:
+                room_txt, seat_txt = "—", "—"
+            rows.append({
+                "sr": i, "code": code, "title": info["name"],
+                "teacher": info["teacher"],
+                "date": info["date"].strftime("%d-%b-%Y"),
+                "day": info["day"][:3], "time": info["slot_label"],
+                "room": room_txt, "seat": seat_txt,
+            })
+            start_t, finish_t = _slot_bounds(info["slot_label"])
+            exams.append({
+                "code": code, "name": info["name"], "teacher": info["teacher"],
+                "date": info["date"].strftime("%Y-%m-%d"),
+                "date_disp": info["date"].strftime("%d-%b-%Y"),
+                "day": info["day"], "slot": info["slot_label"],
+                "start": start_t, "finish": finish_t,
+                "room": room_txt, "seat": seat_txt,
+            })
+        # Unforgeable QR token: a random id followed by an HMAC signature keyed
+        # on the backend's secret. A hand-made / tampered QR cannot produce a
+        # valid signature, so the server rejects it before any lookup. Without a
+        # secret (standalone runs) we fall back to a plain random token.
+        qid = secrets.token_hex(8)
+        if _verify_secret:
+            sig = hmac.new(_verify_secret, f"tok|{qid}".encode(), hashlib.sha256).hexdigest()[:16]
+            token = qid + sig
+        else:
+            token = qid + secrets.token_hex(8)
+        # The QR is NOT a web URL — a generic camera / QR app just shows the plain
+        # notice below, so it cannot open or verify anything. Only the official
+        # Abasyn Admit Card Scanner app finds the "ABASYN-ADMIT:" marker, reads the
+        # token AND the server host (scheme stripped, so it stays un-openable), and
+        # verifies against the database — so the app auto-follows the server's IP
+        # each time cards are generated (no manual config even when the IP changes).
+        _srv = base_url or ""
+        for _pre in ("https://", "http://"):
+            if _srv.startswith(_pre):
+                _srv = _srv[len(_pre):]
+        _srv = _srv.rstrip("/")
+        st["_qr_url"] = (f"Only a valid scanner can scan.  ABASYN-ADMIT:{token}|{_srv}"
+                         if _srv else f"Only a valid scanner can scan.  ABASYN-ADMIT:{token}")
+        verify_students.append({
+            "token": token, "sid": st["sid"], "name": st["name"],
+            "program": st["program"], "batch": st["batch"],
+            "fee_status": fee_default, "exams": exams,
+        })
+        students_rows.append((st, rows))
+        cards += 1
+
+    # sort cards by program then batch then name (nice printing order)
+    students_rows.sort(key=lambda sr: (sr[0]["program"], sr[0]["batch"], sr[0]["name"]))
+
+    # One card == one page, so a student's page number is its position in the
+    # sorted print order. Finance uses this to email each student just their card.
+    _page_of = {sr[0]["sid"]: i for i, sr in enumerate(students_rows, start=1)}
+    for vs in verify_students:
+        vs["page"] = _page_of.get(vs["sid"], 0)
+
+    # 8) render
+    out = config.get("out")
+    if not out:
+        outdir = HERE / "output"; outdir.mkdir(exist_ok=True)
+        out = str(outdir / f"AdmitCards_{exam_type}_{int(datetime.now().timestamp())}.pdf")
+    out_seating = config.get("out_seating") or (out.rsplit(".", 1)[0] + "_SeatingPlan.pdf")
+    out_verify = config.get("out_verify") or (out.rsplit(".", 1)[0] + "_verify.json")
+    out_idsheets = config.get("out_idsheets") or (out.rsplit(".", 1)[0] + "_IdentificationSheets.pdf")
+    out_invig = config.get("out_invig") or (out.rsplit(".", 1)[0] + "_Invigilation.pdf")
+
+    render_admit_cards(students_rows, meta, out, progress_file=config.get("progress_file"))
+    render_seating_plan(sessions_layout, meta, out_seating)
+
+    # identification sheets (per room per course) + invigilation duty roster
+    code_title = {code: info.get("name", "") for code, info in course_idx.items()}
+    # build the invigilator pool as INDIVIDUAL teachers (split combined "A / B" names)
+    _invig = set()
+    for _t in teacher_map.values():
+        if not _t or str(_t).upper() == "TBA":
+            continue
+        for _p in re.split(r"\s*[/&,]\s*", str(_t)):
+            _p = _p.strip()
+            if _p and _p.upper() != "TBA":
+                _invig.add(_p)
+    invig_pool = sorted(_invig)
+    render_identification_sheets(sessions_layout, meta, code_title, out_idsheets)
+    _roster = []
+    _all_ct = build_all_course_teachers(config, teacher_map)
+    # Skip invigilators already on duty in another cohort's roster at the same
+    # date+slot, so no teacher is booked in two rooms at once across BS/BTech/MS.
+    invig_by_session, invig_day_load = render_invigilation(
+        sessions_layout, meta, invig_pool, out_invig,
+        exclude_by_session=config.get("exclude_invigilators_by_session") or {},
+        max_per_day=int(config.get("invigilator_max_per_day") or 2),
+        exclude_day_load=config.get("exclude_invigilator_day_load") or {},
+        course_teachers=_all_ct,
+        roster_out=_roster)
+
+    # machine-readable layout (seats + invigilators) for the independent auditor
+    out_layout = config.get("out_layout") or (out.rsplit(".", 1)[0] + "_layout.json")
+    try:
+        with open(out_layout, "w", encoding="utf-8") as f:
+            json.dump({
+                "sessions": [
+                    {**{k: v for k, v in sess.items() if k != "rooms"},
+                     "rooms": [{"name": rm["name"], "rows": rm["rows"],
+                                "invigilators": next((inv for (rn, _n, _p, inv) in _roster[si]
+                                                      if rn == rm["name"]), [])
+                                if si < len(_roster) else []}
+                               for rm in sess["rooms"]]}
+                    for si, sess in enumerate(sessions_layout)],
+                "venues": venues,
+                "course_teachers": {k: sorted(v) for k, v in _all_ct.items()},
+                "turnover_min": turnover,
+                "turnover_relaxed": turnover_relaxed,
+            }, f, ensure_ascii=False)
+    except Exception as _e:
+        print(f"[admit] could not write layout json: {_e}", file=sys.stderr)
+        out_layout = None
+
+    # ── INDEPENDENT AUDIT (same checker as the Exam Engine) ────────────────────
+    # Re-checks datesheets + seats + cards + invigilators against the registrations
+    # that were actually seated. Never blocks rendering here; the backend stores the
+    # verdict on the admit-card record and warns when it is not clean.
+    audit_result = None
+    if config.get("audit", True) and unified:
+        try:
+            from exam_engine.audit import Audit, audit_datesheets, audit_seating
+            _sch = {str(c).lower(): json.load(open(p_, encoding="utf-8"))
+                    for c, p_ in _dbc.items() if p_ and Path(p_).exists()}
+            _exp = {"student_registrations": [
+                {"student_id": st["sid"], "program": st.get("program", ""), "batch": st.get("batch", ""),
+                 "courses": list(st.get("courses") or [])} for st in students]}
+            _excl = set()
+            for _c, _s in _sch.items():
+                if "excluded_codes" in _s:
+                    _excl |= {str(x).upper() for x in _s["excluded_codes"]}
+                else:   # legacy sheet (no exclusion list) → anything not on it counts as excluded
+                    _on = {str(x["code"]).upper() for x in _s.get("courses", [])}
+                    for st in students:
+                        if _student_cohort(st.get("program")) == _c:
+                            _excl |= {c for c in st.get("courses") or [] if c not in _on}
+            _pol = {c: {"slots": set(_s.get("slots") or [])} for c, _s in _sch.items()}
+            _A = Audit()
+            audit_datesheets(_exp, _sch, _excl, _pol, max_per_day=2, A=_A)
+            _layout = json.load(open(out_layout, encoding="utf-8")) if out_layout else {}
+            _verify_tmp = {"students": verify_students}
+            audit_seating(_exp, _sch, _layout, _verify_tmp, turnover_min=turnover,
+                          inv_cap=int(config.get("invigilator_max_per_day") or 2), A=_A)
+            audit_result = _A.result()
+            with open(out.rsplit(".", 1)[0] + "_audit.json", "w", encoding="utf-8") as _f:
+                json.dump(audit_result, _f, ensure_ascii=False, default=str)
+            print(f"[admit] AUDIT {'CLEAN' if audit_result['clean'] else 'FAILED'} "
+                  f"hard={audit_result['hard_counts']}", file=sys.stderr)
+        except Exception as _e:
+            print(f"[admit] audit skipped: {_e}", file=sys.stderr)
+
+    # verify data (consumed by the backend to power the QR /verify page)
+    try:
+        with open(out_verify, "w", encoding="utf-8") as f:
+            json.dump({
+                "heading": heading, "campus_line": campus_line,
+                "exam_type": exam_type, "semester": semester, "year": year,
+                "base_url": base_url, "fee_default": fee_default,
+                "students": verify_students,
+            }, f, ensure_ascii=False)
+    except Exception:
+        out_verify = None
+
+    total_capacity_students = sum(v["seats"] for v in venues)
+    peak_session = max((s["attending"] for s in seating_report["sessions"]), default=0)
+
+    return {
+        "status": "ok",
+        "file": out,
+        "seating_file": out_seating,
+        "idsheets_file": out_idsheets,
+        "invig_file": out_invig,
+        "invigilators_by_session": invig_by_session,
+        "invigilator_day_load": invig_day_load,
+        "verify_file": out_verify,
+        "fee_default": fee_default,
+        "heading": heading,
+        "campus_line": campus_line,
+        "exam_type": exam_type,
+        "semester": semester,
+        "year": year,
+        "program_level": program_level,
+        "total_students": (output_students if output_cohort else len(students)),
+        "admit_cards": cards,
+        "students_no_paper": (output_students if output_cohort else len(students)) - cards,
+        "total_days": len(dates),
+        "slots_per_day": len(slots),
+        "sessions": len(seating_report["sessions"]),
+        "venues": len(venues),
+        "venue_bench_capacity": sum(v["rows"] for v in venues),
+        "venue_seat_capacity": total_capacity_students,
+        "peak_session_students": peak_session,
+        "seats_short": max(0, peak_session - total_capacity_students),
+        "solo_benches": seating_report["solo_benches"],
+        "overflow_benches": seating_report["overflow_benches"],
+        "start_date": dates[0].strftime("%d-%b-%Y") if dates else "",
+        "end_date": dates[-1].strftime("%d-%b-%Y") if dates else "",
+        "seating_report": seating_report,
+        "clashes": clashes,
+        "clash_count": len(clashes),
+        "unseated_papers": unseated_list,
+        "unseated_count": len(unseated_list),
+        "layout_file": out_layout,
+        "turnover_relaxed": turnover_relaxed,
+        "audit": ({k: audit_result[k] for k in ("clean", "hard_counts", "soft_counts", "stats")}
+                  | {"hard": {k: v[:20] for k, v in audit_result.get("hard", {}).items()}}
+                  if audit_result else None),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate Abasyn admit cards + seating plan.")
+    parser.add_argument("--config", help="Path to a JSON config file.")
+    parser.add_argument("--students", help="Student registration .xls/.xlsx (shortcut).")
+    parser.add_argument("--exam", default="mids", help="mids|finals")
+    parser.add_argument("--start", help="Start date YYYY-MM-DD")
+    parser.add_argument("--out", help="Output admit-cards PDF")
+    args = parser.parse_args()
+
+    if args.config:
+        with open(args.config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    else:
+        cfg = {
+            "dataset_xlsx": args.students,
+            "exam_type": args.exam,
+            "start_date": args.start,
+            "out": args.out,
+            "window_mode": "by_papers",
+            "papers_per_slot": 6,
+        }
+
+    try:
+        result = run(cfg)
+    except Exception as e:
+        print(json.dumps({"status": "failed", "error": str(e)}))
+        sys.exit(1)
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

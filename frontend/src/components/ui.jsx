@@ -1,0 +1,121 @@
+import { motion, AnimatePresence } from 'framer-motion';
+import { X, AlertTriangle, Inbox } from 'lucide-react';
+import './ui.css';
+
+/* ── Page header ── */
+export function PageHeader({ eyebrow, title, subtitle, actions }) {
+  return (
+    <div className="page-header">
+      <div className="page-header-text">
+        {eyebrow && <div className="eyebrow page-header-eyebrow">{eyebrow}</div>}
+        <h1 className="page-header-title font-display">{title}</h1>
+        {subtitle && <p className="page-header-sub">{subtitle}</p>}
+      </div>
+      {actions && <div className="page-header-actions">{actions}</div>}
+    </div>
+  );
+}
+
+/* ── Modal ── */
+export function Modal({ open, onClose, title, children, width = 520 }) {
+  return (
+    <AnimatePresence>
+      {open && (
+        <div className="modal-root">
+          {/* Clicking outside does NOT close — only the ✕ / Cancel buttons do,
+              so a half-filled dialog is never lost by a stray click. */}
+          <motion.div
+            className="modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          />
+          <motion.div
+            className="modal-card"
+            style={{ maxWidth: width }}
+            initial={{ opacity: 0, y: 24, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 16, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 30 }}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="modal-head">
+              <h3 className="font-display">{title}</h3>
+              <button className="modal-close" onClick={onClose} aria-label="Close">
+                <X size={19} />
+              </button>
+            </div>
+            <div className="modal-body">{children}</div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+/* ── Confirm dialog ── */
+export function ConfirmDialog({ open, onClose, onConfirm, title, message, confirmText = 'Delete', loading }) {
+  return (
+    <Modal open={open} onClose={onClose} title={title} width={440}>
+      <div className="confirm">
+        <div className="confirm-icon"><AlertTriangle size={22} /></div>
+        <p className="confirm-message">{message}</p>
+        <div className="confirm-actions">
+          <button className="btn btn-ghost" onClick={onClose} disabled={loading}>Cancel</button>
+          <button className="btn btn-danger" onClick={onConfirm} disabled={loading}>
+            {loading ? <><span className="spinner spinner-dark" /> Working…</> : confirmText}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── Empty state ── */
+export function EmptyState({ icon: Icon = Inbox, title, message, action }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-icon"><Icon size={26} /></div>
+      <div className="empty-title">{title}</div>
+      {message && <div className="empty-message">{message}</div>}
+      {action && <div className="empty-action">{action}</div>}
+    </div>
+  );
+}
+
+/* ── Modern spinner + loader ── */
+export function Spinner({ size = 22, stroke = 3, className = '' }) {
+  return (
+    <span
+      className={`uispin ${className}`}
+      style={{ width: size, height: size, borderWidth: stroke }}
+      role="status"
+      aria-label="Loading"
+    />
+  );
+}
+
+export function Loader({ label = 'Loading…', minHeight = 220 }) {
+  return (
+    <div className="uiloader" style={{ minHeight }}>
+      <span className="uiloader-ring"><Spinner size={34} stroke={3} /></span>
+      {label && <span className="uiloader-label">{label}</span>}
+    </div>
+  );
+}
+
+/* ── Table skeleton ── */
+export function TableSkeleton({ rows = 6, cols = 5 }) {
+  return (
+    <div className="tbl-skeleton">
+      {Array.from({ length: rows }).map((_, r) => (
+        <div className="tbl-skeleton-row" key={r}>
+          {Array.from({ length: cols }).map((_, c) => (
+            <div className="skeleton tbl-skeleton-cell" key={c} style={{ animationDelay: `${(r + c) * 0.04}s` }} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}

@@ -1,0 +1,28 @@
+# Render Blueprint — free Docker web service (no card required).
+# After connecting the GitHub repo in Render, this provisions the service.
+# Secrets (MONGO_URI, JWT_SECRET, ADMIN_*) are set in the dashboard, not here.
+services:
+  - type: web
+    name: abasyn-scheduler
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PYTHON_BIN
+        value: /opt/venv/bin/python3
+      - key: CLIENT_ORIGIN
+        value: "*"
+      - key: JWT_EXPIRES
+        value: 7d
+      - key: MONGO_URI
+        sync: false   # set in dashboard (Atlas SRV string incl. db name)
+      - key: JWT_SECRET
+        sync: false   # set in dashboard (any long random string)
+      - key: ADMIN_USERNAME
+        sync: false   # optional (only used by `npm run seed`)
+      - key: ADMIN_PASSWORD
+        sync: false   # optional
