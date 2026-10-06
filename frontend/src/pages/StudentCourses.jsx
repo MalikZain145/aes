@@ -152,9 +152,10 @@ export default function StudentCourses() {
 
       {confirm && (
         <ConfirmDialog
+          open={!!confirm}
           title="Delete this course?"
           message={`Remove ${confirm.code} from student ${confirm.reg}? If admit cards exist and the paper hasn't been sat yet, that paper is removed from this student's admit card and their seat is freed.`}
-          confirmLabel="Delete" danger onConfirm={doDelete} onCancel={() => setConfirm(null)} />
+          confirmText="Delete course" onConfirm={doDelete} onClose={() => setConfirm(null)} />
       )}
     </div>
   );

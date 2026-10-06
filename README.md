@@ -1,3 +1,13 @@
+---
+title: Abasyn Scheduler
+emoji: 📅
+colorFrom: green
+colorTo: indigo
+sdk: docker
+app_port: 5000
+pinned: false
+---
+
 # Abasyn Scheduler
 
 **Smart academic scheduling for Abasyn University Islamabad Campus.**
