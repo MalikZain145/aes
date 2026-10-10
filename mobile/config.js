@@ -4,7 +4,7 @@
 // discoverBackend). So changing networks needs no config. This value is just a
 // first candidate to try (your usual home IP) + a fallback if discovery fails;
 // you can also set the IP manually from the app's server bar.
-export const API_BASE = 'http://192.168.1.8:5000';
+export const API_BASE = 'https://abasyn-scheduler.onrender.com';
 
 // Legacy: old cards embedded a "{base}/verify/<token>" URL; still supported.
 export const VERIFY_PATH = '/verify/';

@@ -5,11 +5,20 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "android": {
       "package": "pk.edu.abasyn.examscanner",
       "usesCleartextTraffic": true,
-      "permissions": ["CAMERA", "INTERNET", "ACCESS_NETWORK_STATE", "ACCESS_WIFI_STATE"]
+      "permissions": [
+        "CAMERA",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "ACCESS_WIFI_STATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "ios": {
       "supportsTablet": true,
@@ -19,7 +28,18 @@
       }
     },
     "plugins": [
-      ["expo-camera", { "cameraPermission": "Allow Abasyn Examination System to scan admit-card QR codes." }]
-    ]
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Abasyn Examination System to scan admit-card QR codes."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a2f5d276-d3cf-45af-82bb-ed41a421b55d"
+      }
+    },
+    "owner": "zain312"
   }
 }
