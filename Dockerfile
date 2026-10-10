@@ -41,10 +41,8 @@ ENV NODE_ENV=production
 # Run as a non-root user (Hugging Face Spaces runs containers as uid 1000; it must
 # own the app dir so the scheduler can write PDFs to scheduler/output and the admit
 # HMAC secret to backend/). Harmless on Render/Koyeb too.
-RUN mkdir -p /app/scheduler/output \
- && useradd -m -u 1000 appuser \
- && chown -R 1000:1000 /app
-USER 1000
+RUN mkdir -p /app/scheduler/output && chown -R node:node /app
+USER node
 
 # Render injects $PORT; Hugging Face routes to app_port (README metadata). The
 # server falls back to 5000, which both platforms are pointed at.
