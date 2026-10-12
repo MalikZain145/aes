@@ -7,6 +7,7 @@ import api, { errMsg } from '../api/client';
 import { downloadFile } from '../api/download';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, Loader, EmptyState } from '../components/ui';
+import ScrollX from '../components/ScrollX';
 
 const slotName = (s) => String(s || '');
 
@@ -138,7 +139,7 @@ export default function Attendance() {
 
                 {open && (
                   <div style={{ borderTop: '1px solid var(--border,#e5ece8)' }}>
-                    <div className="vw-tablewrap">
+                    <ScrollX className="vw-tablewrap">
                       <table className="vw-table" style={{ width: '100%' }}>
                         <thead><tr>
                           <th style={{ textAlign: 'left' }}>Room</th><th>Students</th><th>Present</th><th>Absent</th><th>Status</th><th></th>
@@ -162,7 +163,7 @@ export default function Attendance() {
                           ))}
                         </tbody>
                       </table>
-                    </div>
+                    </ScrollX>
 
                     {roomSheet && roomSheet.slot === s.slot && roomSheet.date === s.date && (
                       <div style={{ padding: 14, background: 'var(--surface-2,#f6fbf8)' }}>
@@ -177,7 +178,7 @@ export default function Attendance() {
                             No students scanned yet — attendance fills in live as cards are scanned.
                           </div>
                         )}
-                        <div className="vw-tablewrap" style={{ maxHeight: 360, overflow: 'auto' }}>
+                        <ScrollX className="vw-tablewrap" style={{ maxHeight: 360, overflow: 'auto' }}>
                           <table className="vw-table" style={{ width: '100%' }}>
                             <thead><tr><th>Seat</th><th>Reg No</th><th>Name</th><th>Course</th><th>Status</th></tr></thead>
                             <tbody>
@@ -198,7 +199,7 @@ export default function Attendance() {
                               ))}
                             </tbody>
                           </table>
-                        </div>
+                        </ScrollX>
                       </div>
                     )}
                   </div>

@@ -8,6 +8,7 @@ import { downloadFile } from '../api/download';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, EmptyState } from '../components/ui';
 import FancySelect from '../components/FancySelect';
+import ScrollX from '../components/ScrollX';
 
 const VIEWS = [
   { k: 'class', label: 'Class group', icon: Users, field: 'classes' },
@@ -135,7 +136,7 @@ function TimetableGrid({ level, days, slots, breakAfter, entries }) {
           <div style={{ fontSize: 12, fontWeight: 700, color: '#C0392B', marginTop: 2 }}>Labs are currently unavailable</div>
         </div>
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <ScrollX style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 820 }}>
           <thead>
             <tr>
@@ -163,7 +164,7 @@ function TimetableGrid({ level, days, slots, breakAfter, entries }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollX>
     </div>
   );
 }
@@ -289,6 +290,7 @@ function AdminTab({ toast, onPublished }) {
           <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={loadRuns}><RefreshCw size={13} /></button>
         </div>
         {runs.length === 0 ? <EmptyState icon={CalendarRange} title="No runs yet" message="Generate a timetable above." /> : (
+          <ScrollX className="rsp-x">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr>{['When', 'Status', 'BS', 'MS', 'Published', ''].map((h) => <th key={h} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 11, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
             <tbody>
@@ -306,6 +308,7 @@ function AdminTab({ toast, onPublished }) {
               ))}
             </tbody>
           </table>
+          </ScrollX>
         )}
       </div>
     </div>

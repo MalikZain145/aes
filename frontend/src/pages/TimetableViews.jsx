@@ -13,6 +13,7 @@ import FancySelect from '../components/FancySelect';
 import { useAuth } from '../context/AuthContext';
 import { exportExcel, exportPDF } from '../api/exportTable';
 import './views.css';
+import ScrollX from '../components/ScrollX';
 
 const adminName = (a) => (a && (a.displayName || a.name)) || 'Admin';
 
@@ -311,7 +312,7 @@ export default function TimetableViews() {
 
           {/* Grouped table */}
           <div className="card vw-tablecard">
-            <div className="vw-tablewrap">
+            <ScrollX className="vw-tablewrap">
               <table className="vw-table">
                 <thead>
                   <tr>
@@ -332,7 +333,7 @@ export default function TimetableViews() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollX>
           </div>
         </>
       )}
@@ -484,7 +485,7 @@ function UtilizationView({ sessions, meta, who }) {
   const overall = data.length ? Math.round(data.reduce((a, d) => a + d.rooms.overall, 0) / data.length) : 0;
 
   const Matrix = ({ m }) => (
-    <div className="vw-tablewrap vw-util-mtxwrap">
+    <ScrollX className="vw-tablewrap vw-util-mtxwrap">
       <table className="vw-table vw-matrix vw-util-mtx">
         <thead>
           <tr>
@@ -510,7 +511,7 @@ function UtilizationView({ sessions, meta, who }) {
           </tr>
         </tbody>
       </table>
-    </div>
+    </ScrollX>
   );
 
   return (
@@ -613,7 +614,7 @@ function MasterDataView({ sessions, meta, who }) {
                   <button className="vw-icnbtn" title="PDF" onClick={() => pdfOne(c)}><FileText size={15} /></button>
                 </div>
               </div>
-              <div className="vw-tablewrap vw-master-tw">
+              <ScrollX className="vw-tablewrap vw-master-tw">
                 <table className="vw-table">
                   <thead><tr>{c.columns.map((col) => <th key={col.key}>{col.label}</th>)}</tr></thead>
                   <tbody>
@@ -623,7 +624,7 @@ function MasterDataView({ sessions, meta, who }) {
                   </tbody>
                 </table>
                 {c.rows.length > 60 && <div className="vw-more">+ {c.rows.length - 60} more — download to see all</div>}
-              </div>
+              </ScrollX>
             </motion.div>
           );
         })}

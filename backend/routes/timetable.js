@@ -7,8 +7,8 @@ router.use(requireAuth);
 
 // ── read (any signed-in user) ──
 router.get('/me', ctrl.me);
-router.get('/filters', ctrl.filters);
-router.get('/', ctrl.read);
+router.get('/filters', requireRole('admin'), ctrl.filters);
+router.get('/', requireRole('admin'), ctrl.read);
 
 // ── admin only ──
 router.get('/config', requireRole('admin'), ctrl.getConfig);

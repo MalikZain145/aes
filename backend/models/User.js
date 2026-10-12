@@ -32,15 +32,30 @@ const userSchema = new mongoose.Schema(
     teacherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Teacher', default: null },
 
     mustChangePassword: { type: Boolean, default: false },
+    passwordChangedAt: { type: Date },
+
+    // Security: bumping tokenVersion instantly signs the account out everywhere
+    // (used after a password change). failedLogins / lockUntil = brute-force lockout.
+    tokenVersion: { type: Number, default: 0 },
+    failedLogins: { type: Number, default: 0 },
+    lockUntil: { type: Date, default: null },
     active: { type: Boolean, default: true },
     lastLogin: { type: Date },
   },
   { timestamps: true }
 );
 
-userSchema.methods.setPassword = async function (plain) {
-  const salt = await bcrypt.genSalt(10);
-  this.passwordHash = await bcrypt.hash(plain, salt);
+// bcrypt cost 12 for passwords people choose themselves. Default passwords
+// (bulk-created student / faculty logins) keep cost 10 so creating thousands of
+// accounts stays fast — they must be changed on first sign-in anyway.
+userSchema.methods.setPassword = async function (plain, { fast = false } = {}) {
+  const salt = await bcrypt.genSalt(fast ? 10 : 12);
+  this.passwordHash = await bcrypt.hash(String(plain), salt);
+  this.passwordChangedAt = new Date();
+};
+
+userSchema.methods.isLocked = function () {
+  return !!(this.lockUntil && this.lockUntil.getTime() > Date.now());
 };
 
 userSchema.methods.verifyPassword = function (plain) {

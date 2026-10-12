@@ -3,6 +3,7 @@ const multer = require('multer');
 const os = require('os');
 const path = require('path');
 const requireAuth = require('../middleware/auth');
+const { requireRole } = require('../middleware/auth');
 const ctrl = require('../controllers/datasetController');
 
 // Store uploads in the OS temp dir; the controller deletes them after parsing
@@ -16,6 +17,7 @@ const upload = multer({
 });
 
 router.use(requireAuth);
+router.use(requireRole('admin'));   // Exam Cell only
 
 // Multer error handling wrapper
 router.post('/upload', (req, res) => {

@@ -4,13 +4,23 @@ const cors = require('cors');
 const path = require('path');
 
 const connectDB = require('./config/db');
+const security = require('./utils/security');
+
+security.ensureJwtSecret();   // never run with a missing / guessable token secret
 
 const app = express();
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors({ origin: process.env.CLIENT_ORIGIN || '*' }));
+// ── Security middleware ───────────────────────────────────────────────────────
+app.disable('x-powered-by');                       // don't advertise Express
+app.set('trust proxy', 1);                         // real client IP behind Render / nginx
+app.use(security.securityHeaders());               // CSP, no-sniff, frame, referrer, HSTS…
+app.use(cors(security.corsDelegate));              // only allowed web origins
 app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(security.sanitizeInput);                   // block {"$ne": …} NoSQL injection
+// Rate limits: general API ceiling per IP, stricter on the public verify endpoints.
+app.use('/api/', security.rateLimit({ windowMs: 60 * 1000, max: 3000 }));   // generous: a whole lab can share one IP
+app.use(['/api/verify', '/verify'], security.rateLimit({ windowMs: 60 * 1000, max: 120, message: 'Too many scans from this device. Wait a minute and try again.' }));
 
 // Simple request logging in dev
 if (process.env.NODE_ENV !== 'production') {
@@ -66,6 +76,8 @@ if (process.env.NODE_ENV === 'production') {
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) return res.status(413).json({ error: 'The upload is too large.' });
+  if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid request.' });
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Something went wrong on the server.' });
 });
@@ -84,6 +96,13 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   // makes a fresh deploy usable immediately — data is then imported in-app. Existing
   // databases are untouched (it only runs when NO admin exists).
   try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
+  // Every registered student gets a Student Portal login (reg no / student123):
+  // created now for anyone missing, then new registration records are detected
+  // automatically and their logins are created too.
+  try { require('./utils/studentAccounts').startStudentAccountSync(); } catch (e) { console.warn('Student login sync:', e.message); }
+  // Security: any account that still uses a factory password (admin123, finance123,
+  // faculty123, student123) is flagged so its next sign-in forces a new password.
+  setTimeout(() => flagDefaultPasswords().catch((e) => console.warn('Default-password audit:', e.message)), 15000);
   // Bind to 0.0.0.0 so phones on the same WiFi (the QR scanner app) can reach it,
   // not just localhost.
   app.listen(PORT, '0.0.0.0', () => {
@@ -106,6 +125,28 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   });
 })();
 
+// Background audit: flag every account still using a default password. Staff
+// accounts are always checked; students only if not already flagged.
+async function flagDefaultPasswords() {
+  const User = require('./models/User');
+  const bcrypt = require('bcryptjs');
+  const users = await User.find({ mustChangePassword: { $ne: true }, active: { $ne: false } }).select('_id role passwordHash username').lean();
+  let flagged = 0;
+  for (const u of users) {
+    const tryList = u.role === 'student' ? ['student123'] : security.DEFAULT_PASSWORDS;
+    for (const pw of tryList) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await bcrypt.compare(pw, u.passwordHash)) {
+        // eslint-disable-next-line no-await-in-loop
+        await User.updateOne({ _id: u._id }, { $set: { mustChangePassword: true } });
+        flagged += 1;
+        break;
+      }
+    }
+  }
+  if (flagged) console.log(`🔒 ${flagged} account(s) still on a default password — they must set a new one at next sign-in.`);
+}
+
 // Seed the staff login accounts on a fresh database only (no admin yet). The admin
 // username/password come from env when provided, else the project defaults — matching
 // scripts/seed.js so local and deployed credentials stay the same.
@@ -118,8 +159,9 @@ async function seedStaffIfEmpty() {
     { role: 'faculty', username: 'faculty@abasynisb.edu.pk', password: 'faculty123', name: 'Faculty',        email: 'faculty@abasynisb.edu.pk' },
   ];
   for (const a of accounts) {
-    const u = new User({ role: a.role, username: a.username, name: a.name, email: a.email });
-    await u.setPassword(a.password);
+    const u = new User({ role: a.role, username: a.username, name: a.name, email: a.email,
+      mustChangePassword: security.isDefaultPassword(a.password) });
+    await u.setPassword(a.password, { fast: true });
     await u.save();
   }
   console.log(`✓ Seeded ${accounts.length} staff accounts on fresh DB (admin: "${accounts[0].username}")`);

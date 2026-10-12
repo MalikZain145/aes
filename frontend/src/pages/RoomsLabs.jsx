@@ -6,6 +6,7 @@ import { useToast } from '../context/ToastContext';
 import { PageHeader, Modal, ConfirmDialog, EmptyState, Loader } from '../components/ui';
 import '../styles/table.css';
 import './roomslabs.css';
+import ScrollX from '../components/ScrollX';
 
 // Department keys labs can serve (mirrors the scheduler's lab pools)
 const DEPARTMENTS = [
@@ -175,7 +176,7 @@ export default function RoomsLabs() {
             action={<button className="btn btn-primary" onClick={() => openNew(tab)}><Plus size={16} /> Add {tab === 'rooms' ? 'room' : 'lab'}</button>}
           />
         ) : (
-            <div className="data-scroll">
+            <ScrollX className="data-scroll">
               <table className="data-table">
                 <thead>
                   {tab === 'rooms' ? (
@@ -228,7 +229,7 @@ export default function RoomsLabs() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollX>
           )}
       </div>
 

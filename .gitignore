@@ -30,3 +30,6 @@ Thumbs.db
 
 # scratch/temp scripts
 backend/_*.js
+
+# local import data (student PII — never commit to public repo)
+backend/data/

@@ -5,12 +5,22 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#165a35"
+    },
     "assetBundlePatterns": [
       "**/*"
     ],
     "android": {
       "package": "pk.edu.abasyn.examscanner",
       "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#165a35"
+      },
       "permissions": [
         "CAMERA",
         "INTERNET",

@@ -101,7 +101,7 @@ def cohort_datesheet_policy(cohort: str, exam_type: str) -> dict:
     """Datesheet config fragment per cohort. These are exactly the slots the system
     already uses — nothing is re-timed:
         BS    finals 09:00-12:00 | 01:00-03:00      mids 09:00-10:30 | 11:00-12:30 | 01:00-02:30
-        MS    same columns as BS (Postgraduate heading)
+        MS    weekdays 03:00-04:30 | Sat/Sun 01:00-02:30 (09:00-10:30 Sat/Sun only if needed)
         B.Tech 09:00-10:30 | 01:00-02:30 | 03:00-04:30 with weekdays → 03:00-04:30 only,
                Sat/Sun → 09:00-10:30 & 01:00-02:30, Sundays used."""
     if cohort == "btech":
@@ -113,7 +113,18 @@ def cohort_datesheet_policy(cohort: str, exam_type: str) -> dict:
             "include_sundays": True,
         }
     if cohort == "pg":
-        return {"program_level": "Postgraduate"}
+        # MS: weekdays 03:00-04:30 only; Sat/Sun 01:00-02:30; Sat/Sun 09:00-10:30 only
+        # as a last resort; Sundays used; unused columns dropped from the sheet.
+        return {
+            "program_level": "Postgraduate",
+            "slots_override": ["09:00-10:30", "01:00-02:30", "03:00-04:30"],
+            "slot_day_mask": {"weekday": [2], "weekend": [0, 1]},
+            "reserve_slots": {"weekday": [], "weekend": [0]},
+            "light_days": [0, 1, 2, 3],          # Mon-Thu: as few MS papers as possible
+
+            "include_sundays": True,
+            "drop_empty_slots": True,
+        }
     return {"program_level": "Undergraduate"}
 
 

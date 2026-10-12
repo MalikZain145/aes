@@ -95,6 +95,25 @@ INCLUDE_SUNDAYS = False
 # blank. e.g. weekdays → {2} (03:00-04:30), Sat/Sun → {0,1} (09:00, 01:00).
 SLOT_MASK = None
 
+# Reserve (fallback) columns — allowed by SLOT_MASK but used ONLY when nothing else
+# fits, e.g. MS: weekdays 03:00-04:30, Sat/Sun 01:00-02:30, and the Sat/Sun
+# 09:00-10:30 column only as a last resort. {"weekday": {idx...}, "weekend": {idx...}}
+RESERVE_SLOTS = None
+
+# Light days — weekdays that should carry as FEW papers as possible (MS: Mon-Thu).
+# The bulk goes to Fri / Sat / Sun; a light day is used only for what does not fit
+# there clash-free (still before the reserve column). Python weekday(): Mon=0 … Sun=6.
+LIGHT_DAYS = None
+
+def _is_light(date):
+    return bool(LIGHT_DAYS) and date.weekday() in LIGHT_DAYS
+
+def _is_reserve(date, s_i):
+    """True when (date, slot) is a last-resort column for this cohort."""
+    if not RESERVE_SLOTS:
+        return False
+    return s_i in (RESERVE_SLOTS["weekend"] if date.weekday() >= 5 else RESERVE_SLOTS["weekday"])
+
 # Blocked windows — (weekday, start_min, end_min) time ranges no exam slot may
 # overlap, e.g. Friday Jumma 12:30-14:30. weekday: Mon=0 … Sun=6 (Python weekday()).
 # Populated in run() from config["blocked_windows"]; a slot whose time overlaps a
@@ -1106,7 +1125,9 @@ def _schedule_masked(units, dates, slots, seed=None):
             if cell_people[(d, s)] & pset:
                 continue                                # same-slot clash → skip
             sameday = max((day_load[d][sid] for sid in u["students"]), default=0)
-            key = (sameday, len(schedule[(d, s)]), d, s)   # spread days, then balance
+            # reserve columns (MS Sat/Sun 09:00) only when no normal column is clash-free
+            key = (1 if _is_reserve(dates[d], s) else 0, 1 if _is_light(dates[d]) else 0,
+                   sameday, len(schedule[(d, s)]), d, s)
             if best is None or key < best_key:
                 best, best_key = (d, s), key
         if best is None:                                # no clash-free cell (rare) → least-loaded
@@ -1275,6 +1296,16 @@ def schedule_units_cpsat(units, dates, slots, cap_per_cell=None, max_per_day=2,
     for c in cells:
         model.Add(loads[c] <= maxload)
 
+    # Reserve columns (MS Sat/Sun 09:00): every paper placed there costs more than any
+    # comfort term, so they are used only when the normal columns cannot hold the
+    # papers clash-free (still cheaper than breaking capacity / max-per-day).
+    reserve_pen = [x[(ui, c)] for ui in range(n_units) for c in cells if _is_reserve(dates[c[0]], c[1])]
+    # Light days (MS Mon-Thu): each paper there costs more than any comfort term and
+    # each student sitting there a little more, so the bulk lands on Fri/Sat/Sun and
+    # a weekday gets only what cannot fit there (but before the reserve column).
+    light_pen = [x[(ui, c)] for ui in range(n_units) for c in cells if _is_light(dates[c[0]])]
+    light_load = [len(units[ui]["students"]) * x[(ui, c)] for ui in range(n_units) for c in cells if _is_light(dates[c[0]])]
+
     # Objective, strict priority (highest weight first):
     #   • capacity overflow (1e9) and >max/day overflow (1e8) — only non-zero in a
     #     relaxation step; weighted so huge the solver avoids them unless forced,
@@ -1284,6 +1315,9 @@ def schedule_units_cpsat(units, dates, slots, cap_per_cell=None, max_per_day=2,
     model.Minimize(
         1_000_000_000 * sum(cap_pen)
         + 100_000_000 * sum(mpd_pen)
+        + 10_000_000 * sum(reserve_pen)
+        + 50_000 * sum(light_pen)
+        + 100 * sum(light_load)
         + 1000 * sum(two_terms)
         + 200 * sum(b2b_terms)
         + 2 * maxload
@@ -2249,7 +2283,7 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
     # ---- page + column widths ---------------------------------------------
     page = A4  # portrait, like the sample
     usable_w = page[0] - 2.2 * cm
-    day_w  = 1.75 * cm
+    day_w  = 2.10 * cm   # fits "Wednesday" on one line (bold 8.5pt + cell padding)
     date_w = 2.15 * cm
     slot_w = (usable_w - day_w - date_w) / len(slots)
     col_widths = [day_w, date_w] + [slot_w] * len(slots)
@@ -2562,6 +2596,9 @@ def export_schedule_json(schedule, dates, slots, meta, out_path):
             # with these students (cross-cohort clash resolution). Sorted for
             # stable output.
             u_students = sorted(str(s) for s in (u.get("students") or []))
+            # merged papers share one group id (e.g. "MT129+MT123") — the datesheet
+            # editor uses it to keep / undo merges
+            _gid = "+".join(str(c) for c in u["codes"])
             for code, name in zip(u["codes"], u["names"]):
                 courses_out.append({
                     "code": code,
@@ -2573,6 +2610,7 @@ def export_schedule_json(schedule, dates, slots, meta, out_path):
                     "slot_index": s_i,
                     "slot": _slot_label(dates[d_i], s_i, slots),
                     "students": u_students,
+                    "group": _gid,
                 })
                 codes_here.append(code)
         sessions_out.append({
@@ -2646,6 +2684,15 @@ def run(config: dict) -> dict:
                      "weekend": set(int(i) for i in _mask["weekend"])}
     else:
         SLOT_MASK = None
+    global RESERVE_SLOTS, LIGHT_DAYS
+    _ld = config.get("light_days")
+    LIGHT_DAYS = {int(i) for i in _ld} if isinstance(_ld, list) and _ld else None
+    _res = config.get("reserve_slots")
+    if isinstance(_res, dict) and (_res.get("weekday") or _res.get("weekend")):
+        RESERVE_SLOTS = {"weekday": set(int(i) for i in (_res.get("weekday") or [])),
+                         "weekend": set(int(i) for i in (_res.get("weekend") or []))}
+    else:
+        RESERVE_SLOTS = None
 
     # Blocked windows (e.g. Friday Jumma 12:30-14:30). Each entry: {day, start, end}
     # where day is Python weekday() (Mon=0 … Sun=6) and start/end are minutes from
@@ -2996,6 +3043,21 @@ def run(config: dict) -> dict:
         _repair_internal_masked(schedule, dates, slots)
         student_clashes = _slot_clash_count(schedule)
 
+    # ---- unused columns ------------------------------------------------------
+    # drop_empty_slots: a column no paper uses on ANY day is removed from the sheet
+    # (MS shows only 01:00 / 03:00 unless the 09:00 reserve column was needed).
+    if config.get("drop_empty_slots"):
+        _used = sorted({s_i for (d_i, s_i), cu in schedule.items() if cu})
+        if _used and len(_used) < len(slots):
+            _remap = {old: new for new, old in enumerate(_used)}
+            schedule = {(d_i, _remap[s_i]): cu for (d_i, s_i), cu in schedule.items() if s_i in _remap}
+            slots = [slots[i] for i in _used]
+            if SLOT_MASK:
+                SLOT_MASK = {k: {_remap[i] for i in v if i in _remap} for k, v in SLOT_MASK.items()}
+            if RESERVE_SLOTS:
+                RESERVE_SLOTS = {k: {_remap[i] for i in v if i in _remap} for k, v in RESERVE_SLOTS.items()}
+            n_slots = len(slots)
+
     # ---- room / lab load check (rooms first, labs overflow) ---------------
     # Peak concurrent papers in any single slot: these each need a venue. Rooms
     # are filled first; labs only cover the overflow above the room count.
@@ -3213,6 +3275,67 @@ def run(config: dict) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CLI
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def render_edited(config: dict) -> dict:
+    """
+    Re-render a datesheet from an EDITED schedule snapshot (the in-app datesheet
+    editor) — no re-scheduling. config:
+      schedule_json : edited snapshot ({dates, slots, courses:[{code,name,day_index,
+                      slot_index,group,students}], heading, exam_type, ...})
+      out           : output PDF path
+      drop_empty_slots : remove columns no paper uses (MS)
+    Writes the PDF + a fresh <out>_schedule.json and returns a result dict.
+    """
+    with open(config["schedule_json"], "r", encoding="utf-8") as f:
+        data = json.load(f)
+    dates = [datetime.strptime(d, "%Y-%m-%d") for d in data["dates"]]
+    slots = [str(x) for x in data["slots"]]
+    units = {}
+    order = []
+    for c in data.get("courses") or []:
+        d, s_i = int(c["day_index"]), int(c["slot_index"])
+        if not (0 <= d < len(dates) and 0 <= s_i < len(slots)):
+            raise ValueError(f"{c.get('code')}: invalid date/slot")
+        key = (d, s_i, str(c.get("group") or c["code"]))
+        if key not in units:
+            units[key] = {"codes": [], "names": [], "students": set(), "labels": [], "batches": set(), "first_slot": False}
+            order.append(key)
+        u = units[key]
+        u["codes"].append(str(c["code"]))
+        u["names"].append(str(c.get("name") or ""))
+        u["labels"].append(str(c["code"]))
+        u["students"].update(str(x) for x in (c.get("students") or []))
+    schedule = {(d, s_i): [] for d in range(len(dates)) for s_i in range(len(slots))}
+    for key in order:
+        u = units[key]
+        u["students"] = sorted(u["students"])
+        schedule[(key[0], key[1])].append(u)
+    if config.get("drop_empty_slots"):
+        used = sorted({s_i for (d, s_i), cu in schedule.items() if cu})
+        if used and len(used) < len(slots):
+            remap = {old: new for new, old in enumerate(used)}
+            schedule = {(d, remap[s_i]): cu for (d, s_i), cu in schedule.items() if s_i in remap}
+            slots = [slots[i] for i in used]
+    meta = {
+        "exam_type": data.get("exam_type") or "mids",
+        "heading": data.get("heading") or "",
+        "program_level": data.get("program_level"),
+        "semester": data.get("semester"), "year": data.get("year"),
+        "excluded_codes": data.get("excluded_codes") or [],
+    }
+    out = config["out"]
+    generate_pdf(schedule, dates, slots, meta, out)
+    sched_path = export_schedule_json(schedule, dates, slots, meta, out)
+    n_units = sum(len(v) for v in schedule.values())
+    return {
+        "status": "ok", "file": out, "schedule_file": sched_path,
+        "total_courses": sum(len(u["codes"]) for v in schedule.values() for u in v),
+        "total_papers": n_units,
+        "total_days": len({d for (d, _s), v in schedule.items() if v}),
+        "student_clashes": _slot_clash_count(schedule),
+        "start_date": data.get("start_date"), "end_date": data.get("end_date"),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Abasyn datesheet generator")
     parser.add_argument("exam_type", nargs="?", help="mids | finals")
@@ -3226,7 +3349,18 @@ def main():
     parser.add_argument("--program-level", default="Undergraduate")
     parser.add_argument("--semester")
     parser.add_argument("--year", type=int)
+    parser.add_argument("--render", help="Re-render from an edited schedule (JSON config)")
     args = parser.parse_args()
+
+    if args.render:
+        with open(args.render, "r", encoding="utf-8") as f:
+            rcfg = json.load(f)
+        try:
+            print(json.dumps(render_edited(rcfg)))
+        except Exception as e:
+            print(json.dumps({"status": "error", "error": str(e)}))
+            sys.exit(1)
+        return
 
     if args.config:
         with open(args.config, "r", encoding="utf-8") as f:

@@ -32,7 +32,7 @@ export default function FancySelect({ value, onChange, options = [], allLabel = 
   const pick = (v) => { onChange(v); setOpen(false); setQ(''); };
 
   return (
-    <div ref={ref} style={{ position: 'relative', width: width || 'auto', minWidth: 200 }}>
+    <div ref={ref} style={{ position: 'relative', width: width || 'auto', minWidth: 'min(200px, 100%)', maxWidth: '100%', flex: width ? '0 1 auto' : undefined }}>
       <button type="button" disabled={disabled} onClick={() => !disabled && setOpen((o) => !o)}
         style={{
           width: '100%', display: 'flex', alignItems: 'center', gap: 8, cursor: disabled ? 'not-allowed' : 'pointer',

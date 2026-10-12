@@ -185,7 +185,7 @@
 /* ── Files ── */
 .gen-files { padding: 22px 24px; }
 .gen-files-title { font-size: 17px; font-weight: 600; color: var(--text-strong); margin-bottom: 16px; }
-.gen-files-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.gen-files-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; }
 .gen-file {
   display: flex; align-items: center; gap: 13px;
   padding: 14px 16px;

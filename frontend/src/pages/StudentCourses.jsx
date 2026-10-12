@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext';
 import useDebounce from '../api/useDebounce';
 import { PageHeader, ConfirmDialog, EmptyState, Loader } from '../components/ui';
 import '../styles/table.css';
+import ScrollX from '../components/ScrollX';
 
 export default function StudentCourses() {
   const toast = useToast();
@@ -62,7 +63,7 @@ export default function StudentCourses() {
         subtitle="Every student's registered courses (registration-number order). Edit or delete a course — the admit card & seating update for that student only." />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: 1, minWidth: 220 }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 'min(220px, 100%)' }}>
           <Search size={15} style={{ position: 'absolute', left: 10, top: 11, color: 'var(--text-faint)' }} />
           <input className="input" style={{ paddingLeft: 32 }} placeholder="Search reg no, name, program or course…"
             value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -92,7 +93,7 @@ export default function StudentCourses() {
       {loading ? <Loader /> : rows.length === 0 ? (
         <EmptyState title="No students" message="Import the registration report under Import Data." />
       ) : (
-        <div className="table-wrap">
+        <ScrollX className="table-wrap">
           <table className="data-table">
             <thead>
               <tr><th style={{ width: 90 }}>Reg No</th><th style={{ width: 170 }}>Name</th><th style={{ width: 150 }}>Program</th><th>Registered courses</th></tr>
@@ -139,7 +140,7 @@ export default function StudentCourses() {
               ))}
             </tbody>
           </table>
-        </div>
+        </ScrollX>
       )}
 
       {pages > 1 && (

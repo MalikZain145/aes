@@ -3,6 +3,7 @@ import { Download, Loader2, Inbox, RefreshCw, FileText, FileStack } from 'lucide
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, EmptyState } from '../components/ui';
+import ScrollX from '../components/ScrollX';
 
 /**
  * Admin → "New Registration Forms". Shows every registration form by workflow
@@ -102,7 +103,7 @@ export default function RegistrationForms() {
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-          <div style={{ overflowX: 'auto' }}>
+          <ScrollX style={{ overflowX: 'auto' }}>
             <table className="vw-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr>
@@ -129,7 +130,7 @@ export default function RegistrationForms() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollX>
         </div>
       )}
     </div>

@@ -1,15 +1,17 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   CalendarClock, FileText, Download, Loader2, Sparkles, CheckCircle2,
   CalendarDays, Clock, BookMarked, X, Plus, Layers, GitMerge, Trash2,
   Database, Upload, FileSpreadsheet, AlertCircle, Pencil, Search, MinusCircle, Building2,
+  Users, ChevronDown,
 } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, Modal } from '../components/ui';
 import { downloadFile } from '../api/download';
+import DatesheetEditor from './DatesheetEditor';
 import './generate.css';
 import './datesheet.css';
 
@@ -77,6 +79,15 @@ export default function DateSheets() {
   const [selectedDepts, setSelectedDepts] = useState([]); // dept keys chosen
   const [separateDepts, setSeparateDepts] = useState(true); // separate PDF per dept vs one combined
   const [twoPerDay, setTwoPerDay] = useState(false);        // allow 2 papers/student/day (default 1)
+
+  // Batch (program + intake) filter — removed batches' students & their courses are left out.
+  // Nothing selected → every batch counts.
+  const [batchGroups, setBatchGroups] = useState([]);        // [{intake, students, batches:[{batch, program, students}]}]
+  const [excludedBatches, setExcludedBatches] = useState([]); // batch names removed
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchSearch, setBatchSearch] = useState('');
+  const [editingId, setEditingId] = useState(null);   // datesheet open in the editor
+  const batchRestoreRef = useRef(null);   // batches to re-select after "edit" changes the level
 
   // ── holiday review state ──
   const [holidayReview, setHolidayReview] = useState(false); // review dates step
@@ -171,7 +182,16 @@ export default function DateSheets() {
   useEffect(() => { loadHistory(); loadCourseCount(); }, []);
   // Reload the department list whenever the program level changes, and clear any
   // department selections that belong to the other level.
-  useEffect(() => { loadDepartments(programLevel); setSelectedDepts([]); setFirstSlotDepts([]); }, [programLevel]); // eslint-disable-line
+  const loadBatches = async (lvl) => {
+    try {
+      const level = (lvl || programLevel) === 'Postgraduate' ? 'PG' : 'UG';
+      const res = await api.get('/generate/batches', { params: { level } });
+      setBatchGroups(res.data.intakes || []);
+    } catch {
+      setBatchGroups([]);
+    }
+  };
+  useEffect(() => { loadDepartments(programLevel); setSelectedDepts([]); setFirstSlotDepts([]); loadBatches(programLevel); setExcludedBatches(batchRestoreRef.current || []); batchRestoreRef.current = null; setBatchSearch(''); }, [programLevel]); // eslint-disable-line
 
   // ── live heading + filename preview ──
   const { heading, filename } = useMemo(() => {
@@ -269,14 +289,24 @@ export default function DateSheets() {
   const loadCourseList = async () => {
     setCourseLoading(true);
     try {
-      // Only the selected level's courses — so the eliminate list shows MS courses
-      // for Postgraduate, UG courses for Undergraduate.
+      // Every course THIS level's students are registered in (UG = BS + B.Tech,
+      // PG = MS) — shared papers like SS121/SS122 (Fahm-ul-Quran) show in both lists,
+      // whichever level the course row itself carries.
       const level = programLevel === 'Postgraduate' ? 'PG' : 'UG';
-      const res = await api.get('/courses', { params: { limit: 10000, level } });
       const seen = new Map();
-      for (const c of (res.data.items || [])) {
-        const code = String(c.code || '').trim();
-        if (code && !seen.has(code)) seen.set(code, { code, name: c.name || '' });
+      try {
+        const res = await api.get('/generate/cohort-courses', { params: { level } });
+        for (const c of (res.data.items || [])) {
+          const code = String(c.code || '').trim();
+          if (code && !seen.has(code)) seen.set(code, { code, name: c.name || '', students: c.students || 0 });
+        }
+      } catch { /* older backend — fall back to the level's course rows */ }
+      if (!seen.size) {
+        const res = await api.get('/courses', { params: { limit: 10000, level } });
+        for (const c of (res.data.items || [])) {
+          const code = String(c.code || '').trim();
+          if (code && !seen.has(code)) seen.set(code, { code, name: c.name || '' });
+        }
       }
       setCourseList([...seen.values()].sort((a, b) => a.code.localeCompare(b.code)));
       // Courses that get NO paper automatically (FYP / thesis / internship / project /
@@ -375,6 +405,7 @@ export default function DateSheets() {
         form.append('includeCourses', JSON.stringify(Object.keys(autoNoExam).filter((c) => !(removedCodes || []).includes(c))));
         form.append('firstSlotDepartments', JSON.stringify(firstSlotDepts || []));
         form.append('maxPapersPerDay', twoPerDay ? '2' : '1');
+        form.append('excludeBatches', JSON.stringify(excludedBatches || []));
         if (forceMerges) form.append('forceMerges', 'true');
         res = await api.post('/generate/datesheet-from-file', form, {
           headers: { 'Content-Type': 'multipart/form-data' },
@@ -400,6 +431,7 @@ export default function DateSheets() {
           departments: selectedDepts.length ? selectedDepts : undefined,
           separate: selectedDepts.length ? separateDepts : undefined,
           maxPapersPerDay: twoPerDay ? 2 : 1,
+          excludeBatches: excludedBatches.length ? excludedBatches : undefined,
         };
         res = await api.post('/generate/datesheet', payload, { timeout: 30 * 60 * 1000 });
       }
@@ -407,14 +439,16 @@ export default function DateSheets() {
         setResult(null);
         const moved = res.data.btechClashMoves || 0;
         toast.success(`${(res.data.records || []).length} datesheet(s) generated.`
-          + (moved ? ` ${moved} B.Tech paper(s) auto-shifted to avoid gen-ed clashes.` : ''));
+          + (moved ? ` ${moved} B.Tech paper(s) auto-shifted to avoid gen-ed clashes.` : '')
+          + (res.data.removedStudents ? ` ${res.data.removedStudents} student(s) of ${excludedBatches.length} removed batch(es) left out.` : ''));
         // A cohort that FAILED must never vanish silently (e.g. "BTech made, BS missing").
         if ((res.data.errors || []).length) {
           toast.error(`Not generated — ${res.data.errors.join(' | ')}`.slice(0, 600), 15000);
         }
       } else {
         setResult(res.data.result);
-        toast.success('Datesheet generated.');
+        toast.success('Datesheet generated.'
+          + (res.data.removedStudents ? ` ${res.data.removedStudents} student(s) of ${excludedBatches.length} removed batch(es) left out.` : ''));
       }
       loadHistory();
     } catch (err) {
@@ -533,34 +567,41 @@ export default function DateSheets() {
     }
   };
 
-  // Load a previous datesheet's settings back into the form so the user can
-  // tweak them (add merges, change days, etc.) and regenerate.
-  const editDatesheet = (record) => {
-    const cfg = record?.meta?.config;
-    if (!cfg) {
-      toast.error("This datesheet's settings aren't available to edit.");
-      return;
-    }
-    setExamType(cfg.examType === 'finals' ? 'finals' : 'mids');
-    setStartDate(cfg.startDate || '');
-    // Always days-based now. If an old datesheet was papers-based, fall back to
-    // its computed day count so the reloaded form still reflects that window.
-    if (cfg.numDays) setNumDays(cfg.numDays);
-    else if (cfg.totalDays) setNumDays(cfg.totalDays);
-    setProgramLevel(cfg.programLevel || 'Undergraduate');
-    if (cfg.semester) { setSemester(cfg.semester); setSemesterTouched(true); }
-    if (cfg.year) setYear(String(cfg.year));
-    setMergeGroups(Array.isArray(cfg.mergeGroups) ? cfg.mergeGroups : []);
-    setExcludedDates(Array.isArray(cfg.excludeDates) ? cfg.excludeDates : []);
-    setDataSource('existing');
-    setResult(null);
-    toast.success('Loaded settings — adjust and regenerate. Existing merges are kept.');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const slotInfo = examType === 'mids'
+  const slotInfo = programLevel === 'Postgraduate'
+    ? 'MS slots · weekdays 03:00–04:30 · Sat/Sun 01:00–02:30 (09:00–10:30 on Sat/Sun only if needed) · Sundays used · most papers on Fri–Sun, Mon–Thu kept light'
+    : examType === 'mids'
     ? '3 slots/day · 09:00–10:30, 11:00–12:30, 01:00–02:30'
     : '2 slots/day · 09:00–12:00, 01:00–03:00';
+
+  // Batch picker: groups filtered by the search box (intake, program or batch name).
+  const filteredBatchGroups = useMemo(() => {
+    const q = batchSearch.trim().toLowerCase();
+    if (!q) return batchGroups;
+    return batchGroups
+      .map((g) => (g.intake.toLowerCase().includes(q) ? g
+        : { ...g, batches: g.batches.filter((b) => b.batch.toLowerCase().includes(q)) }))
+      .filter((g) => g.batches.length);
+  }, [batchGroups, batchSearch]);
+  const removedStudentCount = useMemo(() => {
+    const ex = new Set(excludedBatches);
+    let n = 0;
+    for (const g of batchGroups) for (const b of g.batches) if (ex.has(b.batch)) n += b.students;
+    return n;
+  }, [batchGroups, excludedBatches]);
+  // "Select all" — ticks every batch (only the ones matching the search, when searching);
+  // the admin then un-ticks the batches that SHOULD get a datesheet.
+  const visibleBatchNames = useMemo(() => filteredBatchGroups.flatMap((g) => g.batches.map((b) => b.batch)), [filteredBatchGroups]);
+  const allVisibleSelected = visibleBatchNames.length > 0 && visibleBatchNames.every((n) => excludedBatches.includes(n));
+  const someVisibleSelected = visibleBatchNames.some((n) => excludedBatches.includes(n));
+  const toggleAllBatches = () => setExcludedBatches((prev) => (allVisibleSelected
+    ? prev.filter((x) => !visibleBatchNames.includes(x))
+    : [...new Set([...prev, ...visibleBatchNames])]));
+  const toggleBatch = (name) => setExcludedBatches((prev) => (prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]));
+  const toggleIntake = (g) => setExcludedBatches((prev) => {
+    const names = g.batches.map((b) => b.batch);
+    const allOn = names.every((n) => prev.includes(n));
+    return allOn ? prev.filter((x) => !names.includes(x)) : [...new Set([...prev, ...names])];
+  });
 
   // Courses matching the remove-step search (by code or name).
   const filteredCourses = useMemo(() => {
@@ -698,6 +739,86 @@ export default function DateSheets() {
             </div>
           )}
 
+          {/* ── Remove batches (intakes) ── */}
+          <div className="ds-batch-box">
+            <label className="ds-label" style={{ marginBottom: 6 }}><Users size={15} /> Remove batches</label>
+            <p className="ds-batch-hint">
+              Select the batches whose papers should NOT be on this {programLevel === 'Postgraduate' ? 'MS' : 'BS / B.Tech'} datesheet
+              (e.g. a batch that has graduated or is on internship). Their students are left out; a course stays only if another batch still takes it.
+              Nothing selected = all batches count.
+            </p>
+            <button type="button" className={`ds-batch-trigger ${batchOpen ? 'open' : ''}`} onClick={() => setBatchOpen((o) => !o)}>
+              <span>
+                {excludedBatches.length
+                  ? <><b>{excludedBatches.length}</b> batch{excludedBatches.length > 1 ? 'es' : ''} removed · {removedStudentCount} student{removedStudentCount === 1 ? '' : 's'} left out</>
+                  : <>All batches count <span className="ds-batch-muted">({batchGroups.reduce((n, g) => n + g.batches.length, 0)} batches)</span></>}
+              </span>
+              <ChevronDown size={16} className="ds-batch-chev" />
+            </button>
+
+            {excludedBatches.length > 0 && !batchOpen && (
+              <div className="ds-batch-chips">
+                {excludedBatches.map((b) => (
+                  <button key={b} type="button" className="ds-batch-chip" onClick={() => toggleBatch(b)} title="Put this batch back">
+                    {b} <X size={12} />
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {batchOpen && (
+              <div className="ds-batch-panel">
+                <div className="ds-batch-search">
+                  <Search size={14} />
+                  <input className="input" placeholder="Search intake, program or batch… (e.g. Fall 2022)"
+                    value={batchSearch} onChange={(e) => setBatchSearch(e.target.value)} />
+                </div>
+                <label className="ds-batch-all">
+                  <input type="checkbox" checked={allVisibleSelected}
+                    ref={(el) => { if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected; }}
+                    onChange={toggleAllBatches} disabled={!visibleBatchNames.length} />
+                  <span className="ds-batch-all-name">Select all{batchSearch.trim() ? ' (matching search)' : ''}</span>
+                  <span className="ds-batch-muted">then un-tick the batches that should get a datesheet</span>
+                </label>
+                <div className="ds-batch-list">
+                  {filteredBatchGroups.length === 0 && (
+                    <div className="ds-batch-empty">{batchGroups.length ? 'No batch matches your search.' : 'No student registrations in the database yet.'}</div>
+                  )}
+                  {filteredBatchGroups.map((g) => {
+                    const names = g.batches.map((b) => b.batch);
+                    const on = names.filter((n) => excludedBatches.includes(n)).length;
+                    const all = on === names.length;
+                    return (
+                      <div key={g.intake} className="ds-batch-group">
+                        <label className="ds-batch-intake">
+                          <input type="checkbox" checked={all} ref={(el) => { if (el) el.indeterminate = on > 0 && !all; }}
+                            onChange={() => toggleIntake(g)} />
+                          <span className="ds-batch-intake-name">{g.intake}</span>
+                          <span className="ds-batch-muted">{g.batches.length} batch{g.batches.length > 1 ? 'es' : ''} · {g.students} students</span>
+                        </label>
+                        {g.batches.map((b) => {
+                          const sel = excludedBatches.includes(b.batch);
+                          return (
+                            <label key={b.batch} className={`ds-batch-row ${sel ? 'removed' : ''}`}>
+                              <input type="checkbox" checked={sel} onChange={() => toggleBatch(b.batch)} />
+                              <span className="ds-batch-name">{b.program || b.batch}</span>
+                              {b.cohort === 'btech' && <span className="ds-batch-tag">B.Tech</span>}
+                              <span className="ds-batch-count">{b.students}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="ds-batch-foot">
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setExcludedBatches([])} disabled={!excludedBatches.length}>Clear all</button>
+                  <button type="button" className="btn btn-brass btn-sm" onClick={() => setBatchOpen(false)}>Done</button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* ── Papers per student per day ── */}
           <div style={{ marginTop: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface-2,#f4f7f5)' }}>
             <label className="ds-label" style={{ marginBottom: 8 }}><Layers size={15} /> Papers per student per day</label>
@@ -819,6 +940,7 @@ export default function DateSheets() {
                     </span>
                   )}
                   {' · '}{h.summary?.days} days · {h.summary?.courses} courses
+                  {h.meta?.editedAt && <span className="ds-hist-merge"><Pencil size={11} /> edited {new Date(h.meta.editedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })}</span>}
                   {typeof h.summary?.studentClashes === 'number' && (
                     h.summary.studentClashes === 0
                       ? <span className="ds-hist-badge ok"><CheckCircle2 size={11} /> clash-free</span>
@@ -840,7 +962,8 @@ export default function DateSheets() {
                   )}
                 </div>
               </div>
-              <button className="btn btn-ghost ds-edit-btn" onClick={() => editDatesheet(h)} disabled={generating || busy}>
+              <button className="btn btn-ghost ds-edit-btn" onClick={() => setEditingId(h._id)} disabled={generating || busy}
+                title="Open this datesheet — move, merge, unmerge or delete papers, then save (clash-checked)">
                 <Pencil size={14} /> Edit
               </button>
               {(h.files || []).map((f) => (
@@ -852,6 +975,17 @@ export default function DateSheets() {
           ))}
         </div>
       )}
+
+      {/* ═══ Datesheet editor ═══ */}
+      <AnimatePresence>
+        {editingId && (
+          <DatesheetEditor
+            datesheetId={editingId}
+            onClose={() => setEditingId(null)}
+            onSaved={() => { setEditingId(null); loadHistory(); }}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ═══ Holiday / date review modal ═══ */}
       <AnimatePresence>
@@ -941,6 +1075,7 @@ export default function DateSheets() {
                           <span className={`ds-remove-check ${on ? 'on' : ''}`}>{on && <CheckCircle2 size={13} />}</span>
                           <span className="ds-remove-code">{c.code}</span>
                           <span className="ds-remove-name">{c.name}</span>
+                          {c.students ? <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--text-faint)', whiteSpace: 'nowrap' }}>{c.students} student{c.students > 1 ? 's' : ''}</span> : null}
                           {autoNoExam[c.code] && (
                             <span className={`ds-remove-tag ${autoNoExam[c.code].source}`} title={autoNoExam[c.code].reason}>
                               {autoNoExam[c.code].source === 'file' ? 'file' : 'auto'}

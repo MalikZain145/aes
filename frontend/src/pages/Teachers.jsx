@@ -7,6 +7,7 @@ import { useToast } from '../context/ToastContext';
 import useDebounce from '../api/useDebounce';
 import { PageHeader, Modal, ConfirmDialog, EmptyState, Loader } from '../components/ui';
 import '../styles/table.css';
+import ScrollX from '../components/ScrollX';
 
 const EMPTY = { name: '', email: '', facultyId: '', department: '' };
 
@@ -124,7 +125,7 @@ export default function Teachers() {
             action={<button className="btn btn-primary" onClick={openNew}><Plus size={16} /> Add teacher</button>}
           />
         ) : (
-          <div className="data-scroll">
+          <ScrollX className="data-scroll">
             <table className="data-table">
               <thead>
                 <tr>
@@ -152,7 +153,7 @@ export default function Teachers() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </ScrollX>
         )}
       </motion.div>
 

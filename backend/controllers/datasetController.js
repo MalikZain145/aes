@@ -98,6 +98,12 @@ exports.uploadDataset = async (req, res) => {
       }
     }
 
+    // New reg numbers → their Student Portal logins are created right away.
+    let studentLogins = null;
+    if (studentRegistrations.length) {
+      try { studentLogins = await require('../utils/studentAccounts').kickStudentAccountSync(); } catch (e) { console.error('student logins:', e.message); }
+    }
+
     // Always derive program/department/level from the student data so BS/MS
     // department lists are correct (program-driven, not code-number driven).
     try { const { deriveCourseMeta } = require('../utils/deriveCourseMeta'); await deriveCourseMeta(); } catch (e) { console.error('deriveCourseMeta:', e.message); }
@@ -120,6 +126,7 @@ exports.uploadDataset = async (req, res) => {
       totalRegistrations: studentRegistrations.length,
       totalCourses: courses.length,
       totalTeachers: teachers.length,
+      studentLoginsCreated: (studentLogins && studentLogins.created) || 0,
     });
   } catch (err) {
     console.error('Dataset upload error:', err);

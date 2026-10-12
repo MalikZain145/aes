@@ -37,15 +37,15 @@ async function seedUsers() {
   for (const a of STAFF_ACCOUNTS) {
     let u = await User.findOne({ username: a.username });
     if (!u) {
-      u = new User({ role: a.role, username: a.username, name: a.name, email: a.email });
-      await u.setPassword(a.password);
+      u = new User({ role: a.role, username: a.username, name: a.name, email: a.email, mustChangePassword: true });
+      await u.setPassword(a.password, { fast: true });
       await u.save();
       console.log(`✓ ${a.role} account created — "${a.username}"  password: "${a.password}"`);
     } else {
       console.log(`• ${a.role} account "${a.username}" already exists — skipped.`);
     }
   }
-  console.log('  ⚠  Change these default passwords for production.');
+  console.log('  🔒 These are default passwords — each account must set its own password at first sign-in.');
 }
 
 async function seedRooms() {

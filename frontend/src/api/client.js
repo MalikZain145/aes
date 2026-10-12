@@ -12,11 +12,15 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// On 401, clear the session and bounce to login
+// On 401, clear the session and bounce to login.
+// On 403 PASSWORD_CHANGE_REQUIRED, open the blocking "set your password" screen.
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 403 && err.response?.data?.code === 'PASSWORD_CHANGE_REQUIRED') {
+      window.dispatchEvent(new CustomEvent('abasyn:password-change-required'));
+    }
+    if (err.response?.status === 401 && !String(err.config?.url || '').includes('/auth/login')) {
       localStorage.removeItem('abasyn_token');
       localStorage.removeItem('abasyn_admin');
       if (!window.location.pathname.includes('/login')) {

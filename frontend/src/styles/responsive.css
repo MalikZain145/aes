@@ -1,0 +1,268 @@
+/* ============================================================
+   Abasyn Scheduler — responsive layer (loaded LAST)
+   ------------------------------------------------------------
+   Goal: every screen from the smallest phone to 2560px wide
+   scrolls only vertically. Wide content (tables, grids,
+   timetables) lives in its own horizontal "slider" instead
+   of pushing the page sideways.
+   ============================================================ */
+
+/* ── 1. Page never scrolls sideways ─────────────────────────── */
+html, body { max-width: 100%; overflow-x: clip; }
+#root { max-width: 100%; }
+.main, .content { min-width: 0; max-width: 100%; }
+
+/* media + long text never push the layout */
+img, video, canvas, iframe { max-width: 100%; height: auto; }
+pre, code { white-space: pre-wrap; overflow-wrap: anywhere; }
+h1, h2, h3, h4, p, li, td, th, label, .muted, .faint { overflow-wrap: break-word; }
+input, select, textarea, .input, .select { max-width: 100%; min-width: 0; }
+
+/* cards / grid & flex children may shrink below their content width */
+.card, .data-card, section, article, form, fieldset,
+[class$="-card"], [class*="-card "], [class$="-grid"] > *, [class*="-grid "] > *,
+[class$="-body"], [class$="-main"], [class$="-panel"], [class$="-col"] { min-width: 0; }
+fieldset { min-inline-size: 0; }
+
+/* ── 2. Horizontal sliders (tables, wide grids) ─────────────── */
+.rsp-x, .table-wrap, .data-scroll, .dash-table-wrap, .vw-tablewrap, .dsp-tablewrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-300) transparent;
+  /* soft edge shadows hint that there is more to swipe */
+  background:
+    linear-gradient(90deg, var(--surface) 30%, rgba(255,255,255,0)) left center / 28px 100% no-repeat local,
+    linear-gradient(270deg, var(--surface) 30%, rgba(255,255,255,0)) right center / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgba(15,61,46,.16), transparent) left center / 10px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgba(15,61,46,.16), transparent) right center / 10px 100% no-repeat scroll;
+}
+.rsp-x::-webkit-scrollbar, .table-wrap::-webkit-scrollbar, .data-scroll::-webkit-scrollbar,
+.dash-table-wrap::-webkit-scrollbar, .vw-tablewrap::-webkit-scrollbar { height: 8px; }
+.rsp-x::-webkit-scrollbar-thumb, .table-wrap::-webkit-scrollbar-thumb, .data-scroll::-webkit-scrollbar-thumb,
+.dash-table-wrap::-webkit-scrollbar-thumb, .vw-tablewrap::-webkit-scrollbar-thumb {
+  background: var(--ink-200); border-radius: 99px; border: 2px solid var(--surface);
+}
+.rsp-x > table, .table-wrap > table { min-width: 100%; }
+.ep-table { min-width: 520px; }
+
+/* pill / tab rows become swipeable chip rails instead of overflowing */
+.seg, .rsp-rail {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+.seg::-webkit-scrollbar, .rsp-rail::-webkit-scrollbar { display: none; }
+.seg > *, .rsp-rail > * { flex-shrink: 0; scroll-snap-align: start; }
+
+/* ── 3. Wide screens (1920 – 2560px) ────────────────────────── */
+@media (min-width: 1920px) {
+  .content { max-width: 1760px; padding-left: 40px; padding-right: 40px; }
+}
+@media (min-width: 2400px) {
+  body { font-size: 16px; }
+  .content { max-width: 1960px; }
+}
+
+/* ── 4. Tablet (≤ 1024px) ───────────────────────────────────── */
+@media (max-width: 1024px) {
+  .content { padding: 22px 22px 56px; }
+}
+
+/* ── 5. Phones (≤ 640px) ────────────────────────────────────── */
+@media (max-width: 640px) {
+  .content { padding: 16px 14px 72px; }
+
+  /* buttons may wrap their label instead of forcing the row wider */
+  .btn { white-space: normal; text-align: left; line-height: 1.25; min-height: 40px; max-width: 100%; }
+  .btn-icon, .row-action, .page-btn { white-space: nowrap; min-height: 0; }
+  .btn > svg { flex-shrink: 0; }
+
+  /* toolbars stack cleanly */
+  .toolbar { gap: 10px; }
+  .toolbar-search, .toolbar-select { flex: 1 1 100%; min-width: 0; max-width: none; }
+  .toolbar-spacer { display: none; }
+
+  /* modals become bottom sheets that fit the screen */
+  .ds-modal-overlay, .modal-overlay, [class$="-overlay"]:not(.dse-overlay) { padding: 10px !important; }
+  .ds-modal, .modal, [class$="-modal"] { max-width: 100% !important; width: 100% !important; max-height: 92vh; overflow-y: auto; padding: 20px 16px !important; border-radius: 18px !important; }
+
+  /* page headings scale down */
+  .page-title, .dash-head-title, h1.font-display { font-size: clamp(22px, 6.4vw, 30px); line-height: 1.15; }
+
+  /* pagination fits */
+  .pagination { justify-content: center; }
+  .pagination-controls { flex-wrap: wrap; justify-content: center; }
+
+  /* data tables slightly tighter */
+  .data-table thead th, .data-table tbody td { padding: 11px 12px; }
+}
+
+/* ── 6. Tiny screens (≤ 380px) ──────────────────────────────── */
+@media (max-width: 380px) {
+  body { font-size: 14px; }
+  .content { padding: 12px 10px 72px; }
+  .card { border-radius: 14px; }
+  .btn { padding: 10px 14px; font-size: 13.5px; }
+  .btn-sm { padding: 8px 11px; font-size: 12.5px; }
+}
+
+/* ══════════════════ page-specific fixes ══════════════════ */
+
+/* Date sheets — history rows */
+@media (max-width: 640px) {
+  .ds-history-item { flex-wrap: wrap; padding: 14px; gap: 10px 12px; }
+  .ds-history-info { flex: 1 1 calc(100% - 54px); }
+  .ds-history-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+  .ds-history-item > .btn { flex: 1 1 0; justify-content: center; text-align: center; }
+}
+
+/* Admit card strip (dashboard) — file buttons */
+.acs-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+.acs-files .btn { min-width: 0; }
+
+/* Registration forms — per-batch download buttons */
+.rsp-wrapbtns { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.rsp-wrapbtns .btn { max-width: 100%; white-space: normal; text-align: left; }
+@media (max-width: 640px) { .ac-hist-docs { width: 100% !important; } }
+
+/* ── Inline-styled layouts (style={{…}}) ─────────────────────── */
+/* single-column grids never grow wider than their container */
+[style*="display: grid"]:not([style*="grid-template-columns"]):not([style*="grid-auto-flow"]) { grid-template-columns: minmax(0, 1fr); }
+[style*="display: grid"] > * { min-width: 0; }
+[style*="display: flex"] > svg, [style*="display: inline-flex"] > svg { flex-shrink: 0; }
+/* rows of chips / buttons / meta wrap on small screens instead of squeezing */
+@media (max-width: 760px) {
+  [style*="display: flex"]:not([style*="flex-direction"]):not([style*="nowrap"]):not([style*="overflow"]) { flex-wrap: wrap; }
+  [style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)) !important; }
+}
+
+/* ── Fixed multi-column grids → fewer columns on phones ─────── */
+@media (max-width: 640px) {
+  .ds-two-col, .ds-window-row { grid-template-columns: minmax(0, 1fr); }
+  .ds-result-grid, .gen-stats-grid, .gen-metrics, .di-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 360px) {
+  .ds-type-row, .ds-types { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Editable course tables (student / faculty forms) → stacked rows on phones */
+@media (max-width: 640px) {
+  .rsp-entry, .rsp-entry tbody { display: block; width: 100%; }
+  .rsp-entry thead { display: none; }
+  .rsp-entry tr {
+    display: grid; align-items: center; gap: 8px; padding: 10px 12px;
+    grid-template-columns: 22px minmax(0, 1fr) 76px 40px;
+    grid-template-areas: "n code cr del" "n title title title";
+  }
+  .rsp-entry td { padding: 0 !important; }
+  .rsp-entry td:nth-child(1) { grid-area: n; align-self: start; padding-top: 10px !important; font-weight: 700; }
+  .rsp-entry td:nth-child(2) { grid-area: code; }
+  .rsp-entry td:nth-child(3) { grid-area: title; }
+  .rsp-entry td:nth-child(4) { grid-area: cr; }
+  .rsp-entry td:nth-child(4) input { max-width: none !important; }
+  .rsp-entry td:nth-child(5) { grid-area: del; text-align: right; }
+}
+
+/* flex:1 text blocks next to buttons drop the button to its own line instead of
+   shrinking to a sliver */
+@media (max-width: 760px) {
+  [style*="display: flex"]:not([style*="flex-direction"]) > [style*="flex: 1"] { flex: 1 1 200px; }
+}
+
+/* Paragraph notes with an inline icon (datesheet / admit-card forms) read as text */
+p.ds-source-note { display: block; }
+p.ds-source-note > svg { display: inline-block; vertical-align: -2px; margin-right: 5px; }
+.ds-upload-drop span { word-break: normal; overflow-wrap: anywhere; }
+
+/* long unbroken values (emails, file names, reg numbers) wrap inside their box */
+.card [style*="background: var(--surface-2"], .ds-history-name, .ds-history-meta,
+.pop-notif-title, .topbar-user-name { overflow-wrap: anywhere; }
+
+/* Datesheet editor stays a true full-screen workspace on phones */
+@media (max-width: 640px) {
+  .dse-overlay { padding: 0 !important; align-items: stretch !important; }
+  .dse-shell { height: 100dvh; max-height: 100dvh; border-radius: 0 !important; }
+  .dse-head { padding: 10px 12px; gap: 10px; }
+  .dse-title { max-width: none; flex: 1 1 auto; }
+  .dse-qwrap { order: 3; flex: 1 1 100%; min-width: 0; }
+  .dse-status { order: 4; flex: 1 1 100%; margin-left: 0; gap: 6px; }
+  .dse-pill { font-size: 11.5px; padding: 4px 8px; }
+  .dse-x { position: absolute; top: 8px; right: 8px; }
+  .dse-body { display: flex; flex-direction: column; overflow-y: auto; }
+  .dse-grid-wrap { flex: 0 0 auto; max-height: 62vh; padding: 10px; }
+  .dse-side { max-height: none; overflow: visible; padding: 12px; }
+  .dse-foot { flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  .dse-foot > div { flex-wrap: wrap; }
+  .dse-foot .btn { padding: 9px 12px; }
+  .dse-qrow { flex-wrap: wrap; }
+  .dse-qacts { width: 100%; flex-wrap: wrap; }
+}
+
+/* Ask Abasyn floating button: smaller on phones, clear of bottom bars,
+   hidden while the full-screen datesheet editor is open */
+@media (max-width: 640px) {
+  .aa-dock { right: 14px !important; bottom: 14px !important; width: 50px !important; height: 50px !important; }
+  .aa-fab { width: 50px !important; height: 50px !important; }
+  .aa-panel { right: 10px !important; left: 10px; bottom: 74px !important; width: auto !important; max-height: 70dvh !important; }
+}
+body:has(.dse-overlay) .aa-dock, body:has(.dse-overlay) .aa-panel { display: none !important; }
+
+/* very narrow phones (≤ 340px) */
+@media (max-width: 340px) {
+  .page-header-actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; }
+  .di-replace { min-width: 0; }
+  .di-replace-text { min-width: 0; overflow-wrap: anywhere; }
+}
+.page-header-actions { max-width: 100%; }
+@media (max-width: 640px) { .page-header-actions { flex-wrap: wrap; flex-shrink: 1; } }
+
+/* ══════════ ScrollX sliders (tables / timetables / timelines) ══════════ */
+.sx { position: relative; min-width: 0; max-width: 100%; }
+.sx > .sx-track { max-width: 100%; overflow-x: auto; scroll-behavior: smooth; scrollbar-width: thin; }
+.sx-arrow {
+  position: absolute; top: 50%; z-index: 4;
+  width: 34px; height: 34px; margin-top: -17px;
+  display: grid; place-items: center; border-radius: 50%;
+  background: rgba(255, 255, 255, .96); color: var(--ink-700, #15503c);
+  border: 1px solid var(--line, #e7e5dc);
+  box-shadow: 0 6px 18px rgba(15, 61, 46, .22);
+  cursor: pointer; transition: transform .15s ease, background .15s ease, opacity .2s ease;
+  animation: sx-in .22s ease;
+}
+.sx-arrow:hover { background: #fff; transform: scale(1.08); }
+.sx-arrow:active { transform: scale(.94); }
+.sx-arrow-left { left: 6px; }
+.sx-arrow-right { right: 6px; }
+.sx-arrow-right svg { animation: sx-nudge 1.6s ease-in-out 2; }
+/* very tall tables: keep the arrows near the top where the eye is */
+.sx.sx-tall > .sx-arrow { top: 64px; }
+@keyframes sx-in { from { opacity: 0; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
+@keyframes sx-nudge { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+/* soft edge fade where content continues */
+.sx.sx-r::after, .sx.sx-l::before {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 26px; z-index: 3; pointer-events: none;
+}
+.sx.sx-r::after { right: 0; background: linear-gradient(270deg, rgba(255,255,255,.95), rgba(255,255,255,0)); }
+.sx.sx-l::before { left: 0; background: linear-gradient(90deg, rgba(255,255,255,.95), rgba(255,255,255,0)); }
+@media (hover: hover) and (min-width: 1025px) { .sx-arrow { width: 32px; height: 32px; margin-top: -16px; } }
+/* layouts where the wrapper was a flex child (dashboard schedule) */
+.dash-schedule .sx { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dash-schedule .sx > .sx-track { flex: 1; min-height: 0; }
+
+/* ══════════ tab bars on phones: stack, never slide off-screen ══════════ */
+@media (max-width: 640px) {
+  .seg { display: flex !important; width: 100%; flex-wrap: wrap; overflow: visible; gap: 6px; }
+  .seg > * { flex: 1 1 calc(50% - 6px); justify-content: center; text-align: center; }
+}
+
+/* Admit-card documents: one under the other on small phones */
+@media (max-width: 420px) {
+  .ac-hist-docs { grid-template-columns: minmax(0, 1fr) !important; }
+  .acs-files { grid-template-columns: minmax(0, 1fr); }
+}

@@ -63,7 +63,7 @@ async function provisionFaculty(teacher) {
       role: 'faculty', username: teacher.email.toLowerCase(), email: teacher.email.toLowerCase(),
       name: teacher.name, department: teacher.department, teacherId: teacher._id, mustChangePassword: true,
     });
-    await u.setPassword('faculty123');
+    await u.setPassword('faculty123', { fast: true });
     await u.save();
   } else if (u.role !== 'admin') {
     u.role = 'faculty'; u.teacherId = teacher._id; u.name = u.name || teacher.name; await u.save();
@@ -180,7 +180,7 @@ exports.uploadStudents = async (req, res) => {
         Object.assign(u, fields); await u.save(); updated += 1;
       } else {
         u = new User({ username, mustChangePassword: true, ...fields });
-        await u.setPassword('student123'); await u.save(); created += 1;
+        await u.setPassword('student123', { fast: true }); await u.save(); created += 1;
       }
     }
     await logActivity('students.upload', `Student accounts uploaded — ${created} created, ${updated} updated.`, 'success');
@@ -205,24 +205,12 @@ exports.studentStats = async (_req, res) => {
 // accounts are left untouched; only missing ones are created.
 exports.provisionStudents = async (_req, res) => {
   try {
-    const bcrypt = require('bcryptjs');
-    const regs = await StudentRegistration.find({ studentId: { $ne: '' } }).select('studentId batch').lean();
-    if (!regs.length) return res.status(400).json({ error: 'No imported student registrations found to create logins from.' });
-
-    const existing = new Set((await User.find({ role: 'student' }).select('username').lean()).map((u) => u.username));
-    const passwordHash = await bcrypt.hash('student123', await bcrypt.genSalt(10)); // shared default hash
-    const seen = new Set();
-    const docs = [];
-    for (const r of regs) {
-      const username = norm(r.studentId);
-      if (!username || existing.has(username) || seen.has(username)) continue;
-      seen.add(username);
-      docs.push({ username, role: 'student', regNo: r.studentId, batch: r.batch || '', passwordHash, mustChangePassword: true, active: true });
-    }
-    if (docs.length) await User.insertMany(docs, { ordered: false }).catch((e) => { if (e.code !== 11000) throw e; });
-    await logActivity('students.provision', `Student logins created from imported registrations — ${docs.length} new account(s).`, 'success');
-    const total = await User.countDocuments({ role: 'student' });
-    res.json({ ok: true, created: docs.length, skippedExisting: existing.size, total });
+    const regCount = await StudentRegistration.countDocuments({ studentId: { $ne: '' } });
+    if (!regCount) return res.status(400).json({ error: 'No imported student registrations found to create logins from.' });
+    const { ensureStudentAccounts } = require('../utils/studentAccounts');
+    const r = await ensureStudentAccounts();
+    await logActivity('students.provision', `Student logins created from imported registrations — ${r.created} new account(s).`, 'success');
+    res.json({ ok: true, created: r.created, updated: r.updated, skippedExisting: Math.max(0, r.total - r.created), total: r.total });
   } catch (err) {
     console.error('provision students error:', err);
     res.status(500).json({ error: err.message || 'Could not create student logins.' });

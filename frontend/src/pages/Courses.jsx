@@ -8,6 +8,7 @@ import useDebounce from '../api/useDebounce';
 import { PageHeader, Modal, ConfirmDialog, EmptyState, Loader } from '../components/ui';
 import FancySelect from '../components/FancySelect';
 import '../styles/table.css';
+import ScrollX from '../components/ScrollX';
 
 const EMPTY_FORM = {
   code: '', name: '', component: 'Lecture', section: '',
@@ -165,7 +166,7 @@ export default function Courses() {
           />
         ) : (
           <>
-            <div className="data-scroll">
+            <ScrollX className="data-scroll">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -201,7 +202,7 @@ export default function Courses() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollX>
 
             {pages > 1 && (
               <div className="pagination">

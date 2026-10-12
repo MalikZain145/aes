@@ -265,6 +265,13 @@ def _student_cohort(program: str) -> str:
     return "bs"
 
 
+def _level_of(program) -> str:
+    """'Postgraduate' for MS / MPhil / PhD students, else 'Undergraduate' (BS + B.Tech).
+    Used for the admit-card title and the identification-sheet Program line, so a
+    unified run (all cohorts in one batch) labels every student by their OWN level."""
+    return "Postgraduate" if _student_cohort(program) == "pg" else "Undergraduate"
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TEACHERS  (code -> teacher name)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -560,6 +567,67 @@ def _dept_of_program(program) -> str:
     return p.strip() or str(program or "").lower()
 
 
+def _batch_key(stu):
+    return re.sub(r"\s+", " ", str(stu.get("batch") or stu.get("program") or "")).strip().lower()
+
+
+def _bench_ok(a, b):
+    """Two students may share a bench: different paper AND different batch."""
+    if a is None or b is None:
+        return True
+    return a["course"] != b["course"] and _batch_key(a) != _batch_key(b)
+
+
+def _separate_batches(layout):
+    """Swap students so no bench seats two students of the same batch.
+    layout: [{room,row,col('L'/'R'),seat,stu}] -> (layout, benches still same-batch)."""
+    out = [dict(r) for r in layout]
+    bench = defaultdict(dict)                       # (room,row) -> {'L': i, 'R': i}
+    for i, r in enumerate(out):
+        bench[(r["room"], r["row"])][r["col"]] = i
+
+    def mate(i):
+        r = out[i]
+        j = bench[(r["room"], r["row"])].get("R" if r["col"] == "L" else "L")
+        return out[j]["stu"] if j is not None else None
+
+    def bad(k):
+        b = bench[k]
+        return "L" in b and "R" in b and _batch_key(out[b["L"]]["stu"]) == _batch_key(out[b["R"]]["stu"])
+
+    for _round in range(3):
+        todo = [k for k in bench if bad(k)]
+        if not todo:
+            break
+        for k in todo:
+            if not bad(k):
+                continue
+            done = False
+            for side in ("R", "L"):
+                i = bench[k].get(side)
+                if i is None:
+                    continue
+                me = out[i]["stu"]
+                # candidates on the same side: same course anywhere first, then same room
+                cands = [j for j, r in enumerate(out) if j != i and r["col"] == side and
+                         (r["stu"]["course"] == me["course"] or r["room"] == out[i]["room"])]
+                cands.sort(key=lambda j: (out[j]["stu"]["course"] != me["course"], out[j]["room"] != out[i]["room"]))
+                for j in cands:
+                    other = out[j]["stu"]
+                    if _batch_key(other) == _batch_key(me):
+                        continue
+                    m_i, m_j = mate(i), mate(j)
+                    if (_bench_ok(other, m_i) and (m_j is None or _bench_ok(me, m_j))
+                            and (m_j is not me) and (m_i is not other)):
+                        out[i]["stu"], out[j]["stu"] = other, me
+                        done = True
+                        break
+                if done:
+                    break
+    left = sum(1 for k in bench if bad(k))
+    return out, left
+
+
 def seat_session(session_students, venues, small_first=False):
     """
     session_students : list of { sid, name, program, batch, course }
@@ -690,6 +758,14 @@ def seat_session(session_students, venues, small_first=False):
         if c <= bc:
             L, Rr, best, best_un, bc = l2, r2, o, un, c
 
+    # ── SAME-BATCH bench-mates are not allowed ──────────────────────────────────
+    # Same degree on one bench is fine (different batch), but two students of the
+    # SAME batch never share a bench. Fix by swapping one of them with a student
+    # on the same side of another bench: preferably the SAME course (room layout
+    # unchanged), else a different course in the SAME room. Every swap keeps both
+    # benches valid (different paper AND different batch).
+    best, same_batch_left = _separate_batches(best)
+
     seat_of = {}; placed = []
     bench_fill = defaultdict(lambda: [False, False])   # (room,row) -> [left?, right?]
     for r in best:
@@ -709,6 +785,7 @@ def seat_session(session_students, venues, small_first=False):
         "solo_benches": solo,
         "overflow_benches": len(best_un),
         "rooms_used": len({r["room"] for r in best}),
+        "same_batch_benches": same_batch_left,
     }
     return seat_of, placed, stats
 
@@ -787,7 +864,7 @@ def build_admit_card(student, rows, meta, S, logo_path, content_w):
     P = Paragraph
 
     # ---- header: title EXACTLY centred on the page, logo top-right ----
-    admit_line = f"{meta.get('program_level', 'Undergraduate')} Admit Card"
+    admit_line = f"{_level_of(student.get('program')) if student.get('program') else meta.get('program_level', 'Undergraduate')} Admit Card"
     exam_line = ", ".join(x for x in [meta.get("exam_label", ""), meta.get("term", "")] if x)
     title_block = Table([
         [P("ABASYN UNIVERSITY", S["uni"])],
@@ -1039,6 +1116,13 @@ def _seat_key(r):
         return (10**9, r.get("seat", ""))
 
 
+def _rows_level(rows):
+    """Level printed on an identification sheet = the level of the students on it
+    (both, if a shared paper has UG and PG students in the same room)."""
+    lv = sorted({_level_of(r.get("program")) for r in rows if r.get("program")}, reverse=True)
+    return " / ".join(lv)
+
+
 def _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date, sess, room_name,
                     code, title, rows):
     """Flowables for ONE identification sheet (a single room + single course)."""
@@ -1061,7 +1145,7 @@ def _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date, sess, roo
         [P(f"<b>Examination Room:</b>&nbsp; {room_name}", S["value"]),
          P(f"<b>Exam Date:</b>&nbsp; {sess['day']}, {sess['date']}", S["value"])],
         [P(f"<b>Course:</b>&nbsp; {code} &nbsp; <font color='#5c6b63'>{title}</font>", S["value"]),
-         P(f"<b>Program:</b>&nbsp; {meta.get('program_level', '')}", S["value"])],
+         P(f"<b>Program:</b>&nbsp; {_rows_level(rows) or meta.get('program_level', '')}", S["value"])],
     ], colWidths=[content_w * 0.6, content_w * 0.4])
     info.setStyle(TableStyle([("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                               ("TOPPADDING", (0, 0), (-1, -1), 2)]))
@@ -1499,6 +1583,15 @@ def run(config: dict) -> dict:
             raise ValueError("No student registrations in the database. Import the registration report under Import Data first.")
     else:
         raise FileNotFoundError("No student data: upload a registration file or import it under Import Data.")
+    # Batches removed when the datesheets were made → those students get NO admit card,
+    # not even for a shared paper other batches still sit (e.g. first-semester intake).
+    _exb = {re.sub(r"\s+", " ", str(b or "")).strip().lower() for b in (config.get("exclude_batches") or [])}
+    _exb.discard("")
+    if _exb:
+        _before = len(students)
+        students = [st for st in students
+                    if re.sub(r"\s+", " ", str(st.get("batch") or st.get("program") or "")).strip().lower() not in _exb]
+        print(f"[admit] removed batches: {_before - len(students)} student(s) left out (no admit card)", file=sys.stderr)
     # Cohort filter — a SINGLE-cohort batch keeps only that cohort's students.
     # UNIFIED mode keeps EVERYONE (all programs seated together).
     cohort = str(config.get("cohort") or "").lower()

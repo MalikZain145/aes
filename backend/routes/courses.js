@@ -1,8 +1,10 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/courseController');
 const requireAuth = require('../middleware/auth');
+const { requireRole } = require('../middleware/auth');
 
 router.use(requireAuth);
+router.use(requireRole('admin'));   // Exam Cell only
 
 router.get('/', ctrl.list);
 router.get('/programs', ctrl.programs);

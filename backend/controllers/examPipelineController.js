@@ -102,6 +102,10 @@ async function saveIngestToDb(exportJson, { updateExisting }) {
     }
   }
   if (inserts.length) { await StudentRegistration.insertMany(inserts, { ordered: false }); out.studentsInserted = inserts.length; }
+  // new reg numbers → Student Portal logins (reg no / student123)
+  if (inserts.length || out.studentsUpdated) {
+    try { const r = await require('../utils/studentAccounts').kickStudentAccountSync(); out.studentLoginsCreated = (r && r.created) || 0; } catch (e) { console.error('student logins:', e.message); }
+  }
 
   // Courses — insert codes the DB does not have yet; never touch existing course rows.
   const haveCodes = new Set((await Course.distinct('code')).map((c) => String(c).toUpperCase()));

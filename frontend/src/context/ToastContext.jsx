@@ -33,7 +33,8 @@ export function ToastProvider({ children }) {
 
   const toast = {
     success: (m, d) => push(m, 'success', d),
-    error: (m, d) => push(m, 'error', d ?? 5000),
+    // the blocking "set your password" screen already explains this — no toast spam
+    error: (m, d) => (/set your own password before continuing/i.test(String(m || '')) ? undefined : push(m, 'error', d ?? 5000)),
     warning: (m, d) => push(m, 'warning', d),
     info: (m, d) => push(m, 'info', d),
   };

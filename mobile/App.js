@@ -1,93 +1,26 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform, TextInput,
-  NativeModules,
+  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as Network from 'expo-network';
 import { API_BASE, VERIFY_PATH } from './config';
 
-// ── Backend auto-discovery ────────────────────────────────────────────────────
-// The exam server runs on the admin's laptop; its LAN IP changes with the WiFi.
-// The app FINDS it automatically — no manual IP setup:
-//   • In Expo Go (dev), the JS bundle is served by Metro on the LAPTOP's LAN IP,
-//     and the backend runs on that SAME laptop, so we read the Metro host IP and
-//     use it directly (instant, exact — this is the primary path in dev).
-//   • Otherwise it probes /api/health on the phone's own /24 subnet, the QR host,
-//     the config fallback and any manual entry, then caches the hit.
-let RESOLVED_BASE = null;
-let MANUAL_BASE = null;
-const clean = (b) => String(b || '').replace(/\/+$/, '');
+// ── Exam server ──────────────────────────────────────────────────────────────
+// The app talks ONLY to the server set in config.js (API_BASE). There is no IP
+// auto-detection and no manual IP box any more — the system is hosted on a
+// server, so the address is fixed and cannot be changed from the phone.
+const clean = (b) => String(b || '').trim().replace(/\/+$/, '');
+const SERVER = clean(API_BASE);
 
-// The laptop IP the Expo app was loaded from (Metro bundler). Backend = same
-// laptop on port 5000 in dev, so this is the fastest, most reliable candidate.
-function metroHostBase() {
-  try {
-    const url = (NativeModules && NativeModules.SourceCode && NativeModules.SourceCode.scriptURL) || '';
-    const m = /^https?:\/\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?/.exec(String(url));
-    if (m && m[1] && !m[1].startsWith('127.') && !m[1].startsWith('0.')) return `http://${m[1]}:5000`;
-  } catch { /* ignore */ }
-  return null;
-}
-
-async function probe(base, timeout = 1500) {
-  if (!base) return false;
+async function pingServer(timeout = 6000) {
   try {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), timeout);
-    const r = await fetch(`${clean(base)}/api/health`, { signal: c.signal });
+    const r = await fetch(`${SERVER}/api/health`, { signal: c.signal });
     clearTimeout(t);
     return r.ok;
   } catch { return false; }
-}
-
-const _prefixOf = (u) => { const m = /(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}/.exec(String(u || '')); return m ? m[1] : null; };
-
-async function discoverBackend(qrHost, onProgress) {
-  // 1) fast path: manual override, last-known, the Metro/laptop IP (dev), the QR
-  //    host, then the config fallback. The Metro IP resolves the dev case
-  //    instantly with no scan and no manual setup.
-  for (const b of [MANUAL_BASE, RESOLVED_BASE, metroHostBase(), qrHost, API_BASE].filter(Boolean).map(clean)) {
-    if (await probe(b, 1300)) { RESOLVED_BASE = b; return b; }
-  }
-  // 2) subnet scan. Gather every /24 worth trying: the phone's OWN subnet, the
-  //    subnet the QR host was on, and the config fallback's subnet — so it works
-  //    even when the server's address changed with the network.
-  const prefixes = [];
-  const addPfx = (p) => { if (p && !p.startsWith('0.') && !p.startsWith('127.') && !prefixes.includes(p)) prefixes.push(p); };
-  try { addPfx(_prefixOf(await Network.getIpAddressAsync())); } catch { /* ignore */ }
-  addPfx(_prefixOf(qrHost));
-  addPfx(_prefixOf(API_BASE));
-  if (!prefixes.length) return null;
-
-  // Prioritise the common host numbers (routers/laptops) so the usual case is
-  // found in well under a second, then fall back to every address.
-  const priority = [1, 100, 101, 102, 103, 104, 105, 10, 2, 3, 4, 5, 8, 20, 50, 150, 200, 254];
-  const octets = [...priority, ...Array.from({ length: 254 }, (_, i) => i + 1)];
-  const seen = new Set();
-  const hosts = [];
-  for (const pfx of prefixes) {
-    for (const o of octets) {
-      const h = `http://${pfx}.${o}:5000`;
-      if (!seen.has(h)) { seen.add(h); hosts.push(h); }
-    }
-  }
-
-  // Bounded-concurrency pool; return the first server that answers.
-  const CONC = 40;
-  let idx = 0, done = 0, found = null;
-  async function worker() {
-    while (idx < hosts.length && !found) {
-      const h = hosts[idx++];
-      if (await probe(h, 1200)) { if (!found) found = clean(h); return; }
-      done += 1;
-      if (onProgress) onProgress(Math.round((done / hosts.length) * 100));
-    }
-  }
-  await Promise.all(Array.from({ length: CONC }, worker));
-  if (found) { RESOLVED_BASE = found; return found; }
-  return null;
 }
 
 const GREEN = '#0f5132';
@@ -114,50 +47,32 @@ function parseQR(data) {
     const bar = rest.indexOf('|');
     const tok = (bar >= 0 ? rest.slice(0, bar) : rest).split(/[/?#\s]/)[0];
     if (!/^[A-Za-z0-9]{6,}$/.test(tok)) return null;
-    let base = String(API_BASE);
-    if (bar >= 0) {
-      const srv = rest.slice(bar + 1).split(/\s/)[0].trim();
-      if (srv) base = /^https?:\/\//i.test(srv) ? srv : `http://${srv}`;
-    }
-    return { base: base.replace(/\/+$/, ''), token: tok };
+    // The server address inside the QR (if any) is ignored on purpose: cards are
+    // ALWAYS verified against the official server from config.js, so a forged QR
+    // can never point the scanner at a fake server.
+    return { token: tok };
   }
   // Backward-compat: old cards whose QR was a full "{base}/verify/<token>" URL.
   const i = s.indexOf(VERIFY_PATH);
   if (i === -1) return null;
-  let base = s.slice(0, i);
   const tok = s.slice(i + VERIFY_PATH.length).split(/[/?#]/)[0];
   if (!/^[A-Za-z0-9]{6,}$/.test(tok)) return null;
-  if (!/^https?:\/\//i.test(base)) base = API_BASE;
-  return { base: base.replace(/\/+$/, ''), token: tok };
+  return { token: tok };
 }
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [mode, setMode] = useState('scan');      // scan | loading | result
   const [result, setResult] = useState(null);
-  const [server, setServer] = useState(RESOLVED_BASE || '');   // detected backend
-  const [detecting, setDetecting] = useState(false);
-  const [manualIp, setManualIp] = useState('');
+  const [online, setOnline] = useState(null);   // null = checking, true/false
   const lock = useRef(false);
 
-  // find the server once when the app opens, so the first scan is instant
-  useEffect(() => { detect(); }, []); // eslint-disable-line
-
-  const detect = useCallback(async () => {
-    setDetecting(true);
-    try { const b = await discoverBackend(null); setServer(b || ''); }
-    finally { setDetecting(false); }
+  const check = useCallback(async () => {
+    setOnline(null);
+    setOnline(await pingServer());
   }, []);
-
-  const saveManual = useCallback(() => {
-    const v = manualIp.trim();
-    if (!v) { MANUAL_BASE = null; return; }
-    // accept "192.168.1.8", "192.168.1.8:5000" or a full URL
-    let b = v;
-    if (!/^https?:\/\//i.test(b)) b = `http://${b}`;
-    if (!/:\d+/.test(b.replace(/^https?:\/\//, ''))) b = `${b}:5000`;
-    MANUAL_BASE = clean(b); RESOLVED_BASE = MANUAL_BASE; setServer(MANUAL_BASE);
-  }, [manualIp]);
+  // check the server once when the app opens
+  useEffect(() => { check(); }, [check]);
 
   const startScan = useCallback(() => {
     lock.current = false;
@@ -177,38 +92,21 @@ export default function App() {
     }
     setMode('loading');
 
-    const verifyOn = async (base) => {
+    try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 12000);
+      let res = null;
       try {
-        const res = await fetch(`${base}/api/verify/${parsed.token}`, { signal: ctrl.signal });
-        clearTimeout(timer);
-        return res;
-      } catch { clearTimeout(timer); return null; }
-    };
-
-    try {
-      // Resolve the backend on THIS network (auto-detect), ignoring any stale
-      // host baked into the QR when it was generated on another network.
-      let base = await discoverBackend(parsed.base);
-      if (base) setServer(base);
-      if (!base) {
-        setResult({ type: 'error', message: 'Could not find the exam server on this network. Make sure the server is running and the phone is on the same WiFi, or set the server IP manually.' });
-        setMode('result');
-        return;
-      }
-      let res = await verifyOn(base);
+        res = await fetch(`${SERVER}/api/verify/${encodeURIComponent(parsed.token)}`, { signal: ctrl.signal });
+      } catch { res = null; }
+      clearTimeout(timer);
+      setOnline(!!res);
       if (!res) {
-        // The cached address may have gone stale (server moved) — drop it and
-        // re-scan the network once before giving up.
-        RESOLVED_BASE = null;
-        base = await discoverBackend(parsed.base);
-        if (base) { setServer(base); res = await verifyOn(base); }
-      }
-      if (!res) {
-        setResult({ type: 'error', message: 'Cannot reach the server. Make sure the exam server is running and on the same WiFi.' });
+        setResult({ type: 'error', message: 'Cannot reach the exam server. Check the phone\'s internet connection and try again.' });
       } else if (res.status === 404) {
         setResult({ type: 'record_not_found' });     // our-format QR, not in DB → fake
+      } else if (res.status === 429) {
+        setResult({ type: 'error', message: 'Too many scans in a short time. Wait a minute and scan again.' });
       } else if (res.ok) {
         const json = await res.json();
         if (json && json.ok) setResult({ type: 'valid', data: json });
@@ -217,7 +115,7 @@ export default function App() {
         setResult({ type: 'error', message: `Server error (${res.status}).` });
       }
     } catch (e) {
-      setResult({ type: 'error', message: 'Cannot reach the server. Make sure the exam server is running and on the same WiFi.' });
+      setResult({ type: 'error', message: 'Cannot reach the exam server. Check the phone\'s internet connection and try again.' });
     }
     setMode('result');
   }, []);
@@ -243,30 +141,16 @@ export default function App() {
         <ResultView result={result} onNext={startScan} />
       )}
 
-      {/* Server status — auto-detected on this network; manual override optional */}
+      {/* Server status (fixed server from config.js — not editable on the phone) */}
       {mode === 'scan' && (
         <View style={styles.srvBar}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.srvLabel}>
-              {detecting ? 'Detecting exam server…' : (server ? `Server: ${server.replace(/^https?:\/\//, '')}` : 'Server not found on this network')}
-            </Text>
-            <View style={styles.srvRow}>
-              <TextInput
-                style={styles.srvInput}
-                placeholder="Set IP manually (e.g. 192.168.10.5)"
-                placeholderTextColor="#8aa"
-                autoCapitalize="none"
-                keyboardType="default"
-                value={manualIp}
-                onChangeText={setManualIp}
-                onSubmitEditing={saveManual}
-              />
-              <TouchableOpacity style={styles.srvBtn} onPress={saveManual}><Text style={styles.srvBtnT}>Set</Text></TouchableOpacity>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.srvDetect} onPress={detect} disabled={detecting}>
-            {detecting ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.srvBtnT}>Re-detect</Text>}
-          </TouchableOpacity>
+          <View style={[styles.srvDot, { backgroundColor: online === null ? '#f0c36d' : online ? '#4ade80' : '#f87171' }]} />
+          <Text style={styles.srvLabel} numberOfLines={1}>
+            {online === null ? 'Connecting to exam server…' : online ? 'Connected to exam server' : 'Exam server not reachable'}
+          </Text>
+          {online === false && (
+            <TouchableOpacity style={styles.srvBtn} onPress={check}><Text style={styles.srvBtnT}>Retry</Text></TouchableOpacity>
+          )}
         </View>
       )}
     </View>
@@ -407,13 +291,11 @@ const KV = ({ k, v }) => (
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#eef4f0' },
-  srvBar: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, backgroundColor: '#0f5132' },
-  srvLabel: { color: '#daf0e4', fontSize: 12, fontWeight: '700', marginBottom: 6 },
-  srvRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  srvInput: { flex: 1, backgroundColor: '#fff', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, color: '#0f5132' },
-  srvBtn: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
+  srvBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#0f5132' },
+  srvDot: { width: 9, height: 9, borderRadius: 5 },
+  srvLabel: { flex: 1, color: '#daf0e4', fontSize: 13, fontWeight: '700' },
+  srvBtn: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
   srvBtnT: { color: '#fff', fontWeight: '800', fontSize: 12 },
-  srvDetect: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, minWidth: 78, alignItems: 'center' },
   header: { paddingTop: Platform.OS === 'ios' ? 58 : 40, paddingBottom: 14, paddingHorizontal: 18,
     backgroundColor: GREEN, alignItems: 'center' },
   hTitle: { color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: 0.5 },

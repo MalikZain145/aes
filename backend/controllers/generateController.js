@@ -284,6 +284,19 @@ function writeCohortExport(srcPath, cohortTest, tag) {
   return { path: p, courseCount: courses.length };
 }
 
+// MS (Postgraduate) exam slots: weekdays 03:00-04:30 only; Sat/Sun 01:00-02:30, and
+// the Sat/Sun 09:00-10:30 column ONLY as a last resort (reserve) when the papers can't
+// fit clash-free otherwise. Sundays are used. A column no paper needs is dropped from
+// the PDF, so normally the MS sheet shows just 01:00-02:30 and 03:00-04:30.
+const MS_SLOT_POLICY = {
+  slots_override: ['09:00-10:30', '01:00-02:30', '03:00-04:30'],
+  slot_day_mask: { weekday: [2], weekend: [0, 1] },
+  reserve_slots: { weekday: [], weekend: [0] },
+  light_days: [0, 1, 2, 3],   // Mon-Thu carry as few MS papers as possible; bulk on Fri/Sat/Sun
+  include_sundays: true,
+  drop_empty_slots: true,
+};
+
 // Cohort test on a student's program/batch string.
 const _isPGprog = (p) => /( ms | mphil |mphil| master| mba | msc |postgrad| pgd | phd )/.test(' ' + String(p || '').toLowerCase().replace(/[.\-]/g, ' ') + ' ');
 const _isBTprog = (p) => { const s = ' ' + String(p || '').toLowerCase().replace(/[.\-]/g, ' ') + ' '; return s.includes('btech') || s.includes(' b tech') || s.includes('engineering technology'); };
@@ -434,6 +447,7 @@ async function runDatesheetJob(base, dataJson, deptKeys, labelOverride, avoidSch
       programLevel: result.program_level, semester: result.semester, year: result.year,
       departments: deptKeys, departmentLabel: deptName || undefined, btech: isBtech || undefined,
       noExamAuto: result.auto_excluded || {}, restoredNoExam: result.restored_no_exam || [], reviewNoExam: result.review_no_exam || [],
+      excludeBatches: base.excludeBatches || [],   // their students get NO admit card
     },
     status: 'ready',
   });
@@ -466,6 +480,7 @@ async function recordSplits(base, result, splits) {
         programLevel: result.program_level, semester: result.semester, year: result.year,
         departments: sp.depts, departmentLabel: deptName || undefined, jointSolve: true,
         noExamAuto: result.auto_excluded || {}, restoredNoExam: result.restored_no_exam || [], reviewNoExam: result.review_no_exam || [],
+        excludeBatches: base.excludeBatches || [],   // their students get NO admit card
       },
       status: 'ready',
     }));
@@ -491,6 +506,117 @@ function writeStudentCohortExport(raw, cohort, codes, tag) {
   fs.writeFileSync(p, JSON.stringify({ ...raw, courses, student_registrations: regs }));
   return { path: p, courseCount: courses.length };
 }
+
+// ── Batch (intake) filter ────────────────────────────────────────────────────
+// A "batch" = program + intake, e.g. "BS Computer Science Fall 2022" (the
+// StudentRegistration.batch field; falls back to the program when blank).
+const _batchKey = (b) => String(b || '').trim().replace(/\s+/g, ' ').toLowerCase();
+const _batchOf = (r) => String((r && (r.batch || r.program)) || '').trim().replace(/\s+/g, ' ');
+// "BS Computer Science Fall 2022" → "Fall 2022" (the intake part)
+function _intakeOf(batch, program) {
+  const b = String(batch || '').trim().replace(/\s+/g, ' ');
+  const m = b.match(/(spring|summer|fall|autumn|winter)\s*[-']?\s*(\d{2,4})\b/i);
+  if (m) {
+    let y = m[2]; if (y.length === 2) y = '20' + y;
+    return m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() + ' ' + y;
+  }
+  const p = String(program || '').trim();
+  if (p && b.toLowerCase().startsWith(p.toLowerCase())) return b.slice(p.length).trim() || 'Unspecified';
+  const y = b.match(/\b(19|20)\d{2}\b/);
+  return y ? y[0] : 'Unspecified';
+}
+// Sort intakes newest first: year desc, then Fall > Summer > Spring.
+const _SEASON_ORDER = { winter: 4, fall: 3, autumn: 3, summer: 2, spring: 1 };
+function _intakeSortKey(intake) {
+  const m = String(intake).match(/^(\w+)\s+(\d{4})$/);
+  if (!m) return -1;
+  return Number(m[2]) * 10 + (_SEASON_ORDER[m[1].toLowerCase()] || 0);
+}
+
+/**
+ * Drop every student of the excluded batches from an export JSON (in place).
+ * Their courses then only count if some OTHER (kept) student still takes them —
+ * a course taken only by removed batches disappears from the datesheet.
+ * Returns { removedStudents, keptStudents }.
+ */
+function applyBatchExclusion(exportPath, excludeBatches) {
+  const ex = new Set((excludeBatches || []).map(_batchKey).filter(Boolean));
+  if (!ex.size) return { removedStudents: 0, keptStudents: null };
+  const raw = JSON.parse(fs.readFileSync(exportPath, 'utf-8'));
+  const regs = raw.student_registrations || [];
+  const kept = regs.filter((r) => !ex.has(_batchKey(_batchOf(r))));
+  const taken = new Set();
+  for (const r of kept) for (const c of (r.courses || [])) taken.add(String(c).trim().toUpperCase());
+  const courses = (raw.courses || []).filter((c) => taken.has(String(c.code || '').trim().toUpperCase()));
+  fs.writeFileSync(exportPath, JSON.stringify({ ...raw, courses, student_registrations: kept }));
+  return { removedStudents: regs.length - kept.length, keptStudents: kept.length };
+}
+
+/**
+ * GET /api/generate/cohort-courses?level=UG|PG
+ * Every course the STUDENTS of that level are registered in (UG = BS + B.Tech,
+ * PG = MS/MPhil/PhD), whatever level the course row itself carries — so shared
+ * papers like SS121/SS122 (Fahm-ul-Quran) appear in BOTH remove-course lists.
+ */
+exports.cohortCourses = async (req, res) => {
+  try {
+    const level = String(req.query.level || 'UG').toUpperCase() === 'PG' ? 'PG' : 'UG';
+    const up = (x) => String(x || '').trim().toUpperCase();
+    const regs = await StudentRegistration.find({ studentId: { $ne: '' } }).select('program batch courses').lean();
+    const count = new Map();
+    for (const r of regs) {
+      const isPG = cohortOfProgram(r.program || r.batch) === 'pg';
+      if ((level === 'PG') !== isPG) continue;
+      for (const c of new Set((r.courses || []).map(up))) if (c) count.set(c, (count.get(c) || 0) + 1);
+    }
+    const names = new Map();
+    for (const c of await Course.find({ code: { $in: [...count.keys()] } }).select('code name').lean()) {
+      const k = up(c.code); if (!names.has(k) && c.name) names.set(k, c.name);
+    }
+    const items = [...count.entries()]
+      .map(([code, students]) => ({ code, name: names.get(code) || '', students }))
+      .sort((a, b) => a.code.localeCompare(b.code));
+    res.json({ level, total: items.length, items });
+  } catch (err) {
+    console.error('cohortCourses error:', err.message);
+    res.status(500).json({ error: 'Could not load the course list.' });
+  }
+};
+
+/**
+ * GET /api/generate/batches?level=UG|PG
+ * Every batch (program + intake) present in the registrations, grouped by intake,
+ * for the datesheet "remove batches" picker. UG = BS + B.Tech students, PG = MS/MPhil/PhD.
+ */
+exports.listBatches = async (req, res) => {
+  try {
+    const level = String(req.query.level || 'UG').toUpperCase() === 'PG' ? 'PG' : 'UG';
+    const regs = await StudentRegistration.find({ studentId: { $ne: '' } }).select('program batch').lean();
+    const byBatch = new Map();
+    for (const r of regs) {
+      const cohort = cohortOfProgram(r.program || r.batch);
+      if ((level === 'PG') !== (cohort === 'pg')) continue;
+      const batch = _batchOf(r);
+      if (!batch) continue;
+      const k = _batchKey(batch);
+      if (!byBatch.has(k)) byBatch.set(k, { batch, program: r.program || '', intake: _intakeOf(batch, r.program), cohort, students: 0 });
+      byBatch.get(k).students += 1;
+    }
+    const items = [...byBatch.values()].sort((a, b) =>
+      _intakeSortKey(b.intake) - _intakeSortKey(a.intake) || a.batch.localeCompare(b.batch));
+    const intakes = [];
+    for (const it of items) {
+      let g = intakes.find((x) => x.intake === it.intake);
+      if (!g) { g = { intake: it.intake, students: 0, batches: [] }; intakes.push(g); }
+      g.students += it.students;
+      g.batches.push(it);
+    }
+    res.json({ level, total: items.length, intakes });
+  } catch (err) {
+    console.error('listBatches error:', err.message);
+    res.status(500).json({ error: 'Could not load batches.' });
+  }
+};
 
 // An uploaded registration report (.xls/.xlsx/.csv, any recognised shape) → a DB-export
 // shaped JSON (rooms/labs/teachers from the DB). Nothing is written to the database.
@@ -534,6 +660,9 @@ exports.generateDatesheet = async (req, res) => {
     mergeGroups = _J(mergeGroups, []);
     excludeDates = _J(excludeDates, []);
     let includeCourses = _J((req.body || {}).includeCourses, []);
+    // Batches (program + intake) the admin removed → their students don't count at all.
+    let excludeBatches = _J((req.body || {}).excludeBatches, []);
+    excludeBatches = Array.isArray(excludeBatches) ? excludeBatches.map((x) => String(x || '').trim()).filter(Boolean) : [];
     includeCourses = Array.isArray(includeCourses) ? includeCourses.map((x) => String(x).toUpperCase()).filter(Boolean) : [];
 
     // excludeCourses may arrive as an array (JSON body) or a JSON string
@@ -593,6 +722,17 @@ exports.generateDatesheet = async (req, res) => {
       }
     }
 
+    // ── BATCH FILTER: removed batches' students are dropped before anything else, so
+    //    their courses only stay if a kept student still takes them. None selected → all count.
+    let batchFilter = { removedStudents: 0, keptStudents: null };
+    if (excludeBatches.length) {
+      batchFilter = applyBatchExclusion(exportPath, excludeBatches);
+      if (batchFilter.keptStudents === 0) {
+        cleanup(exportPath);
+        return res.status(400).json({ error: 'Every student is in a removed batch — nothing left to schedule.' });
+      }
+    }
+
     // ── COHORT ROUTING (by the STUDENT's program, never by a course's department) ──
     //   MS / MPhil / PhD students      → the Postgraduate datesheet
     //   B.Tech / BSc Eng. Technology   → the B.Tech datesheet (its own evening/weekend slots)
@@ -634,6 +774,7 @@ exports.generateDatesheet = async (req, res) => {
         exCourses, includeCourses, fsDepts, fsProvided, forceMerges: String(forceMerges) === 'true' || forceMerges === true,
         blockedWindows, sameDayGroups,
         maxPerDay: Math.min(2, Math.max(1, Number((req.body || {}).maxPapersPerDay) || 1)),
+        excludeBatches,
       };
 
       // BS jobs: one sheet for all BS students, or split by the selected departments
@@ -721,8 +862,8 @@ exports.generateDatesheet = async (req, res) => {
         }
       } catch (e) { console.error('prune datesheets:', e.message); }
       await logActivity('generate.datesheet',
-        `${records.length} datesheet(s) generated${errors.length ? `; FAILED: ${errors.join(' | ').slice(0, 1500)}` : ''}`, errors.length ? 'warning' : 'success');
-      return res.json({ ok: true, records, multi: true, errors });
+        `${records.length} datesheet(s) generated${excludeBatches.length ? ` (removed batches: ${excludeBatches.join(', ').slice(0, 600)})` : ''}${errors.length ? `; FAILED: ${errors.join(' | ').slice(0, 1500)}` : ''}`, errors.length ? 'warning' : 'success');
+      return res.json({ ok: true, records, multi: true, errors, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents });
     }
 
     const stamp = Date.now();
@@ -757,6 +898,7 @@ exports.generateDatesheet = async (req, res) => {
       force_merges: String(forceMerges) === 'true' || forceMerges === true,
       data_json: exportPath,
       out: pdfPath,
+      ...MS_SLOT_POLICY,
     };
     configPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}.json`);
     fs.writeFileSync(configPath, JSON.stringify(config));
@@ -800,6 +942,7 @@ exports.generateDatesheet = async (req, res) => {
         programLevel: result.program_level, semester: result.semester, year: result.year,
         studentClashes: result.student_clashes, batchOverlaps: result.batch_overlaps,
         noExamAuto: result.auto_excluded || {}, restoredNoExam: result.restored_no_exam || [], reviewNoExam: result.review_no_exam || [],
+        excludeBatches,   // their students get NO admit card
         // store the exact inputs so the datesheet can be re-generated / edited
         config: {
           examType, startDate, windowMode: mode,
@@ -808,6 +951,7 @@ exports.generateDatesheet = async (req, res) => {
           programLevel: programLevel || 'Undergraduate', semester, year,
           mergeGroups: Array.isArray(mergeGroups) ? mergeGroups : [],
           excludeDates: Array.isArray(excludeDates) ? excludeDates : [],
+          excludeBatches,
         },
       },
       status: 'ready',
@@ -823,7 +967,7 @@ exports.generateDatesheet = async (req, res) => {
       'success'
     );
 
-    res.json({ ok: true, record, result });
+    res.json({ ok: true, record, result, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents });
   } catch (err) {
     cleanup(exportPath); cleanup(configPath);
     console.error('Datesheet generation error:', err);
@@ -953,6 +1097,14 @@ exports.generateAdmitCards = async (req, res) => {
     // Export the DB → gives rooms/labs (with examCapacity) + course teachers.
     const { exportPath: ep, counts } = await exportDatabaseToJson();
     exportPath = ep;
+    // Batches removed when these datesheets were made → their students get NO admit
+    // card (not even for a shared paper other batches still sit). Others are unaffected.
+    const removedBatches = [...new Set(datesheets.flatMap((d) => (d.meta && (d.meta.excludeBatches
+      || (d.meta.config && d.meta.config.excludeBatches))) || []))];
+    let removedStudents = 0;
+    if (removedBatches.length) {
+      ({ removedStudents } = applyBatchExclusion(exportPath, removedBatches));
+    }
     if (counts.rooms === 0 && counts.labs === 0) {
       cleanup(exportPath);
       return res.status(400).json({ error: 'No rooms or labs in the database. Add exam venues first.' });
@@ -998,6 +1150,7 @@ exports.generateAdmitCards = async (req, res) => {
       // Cohort filter: 'bs' | 'btech' | 'pg' → this batch seats only that cohort,
       // so B.Tech gets its own separate seating plan / admit cards.
       output_cohort: outputCohort || undefined,   // which cohort's cards to ISSUE
+      exclude_batches: removedBatches,   // batches removed on the datesheets → no admit card
     };
     // Map each cohort → its own frozen schedule so a student's paper time comes from
     // THEIR program's datesheet, while the SEATING considers all cohorts together.
@@ -1174,6 +1327,7 @@ exports.generateAdmitCards = async (req, res) => {
         soloBenches: result.solo_benches, overflowBenches: result.overflow_benches,
         seatsShort: result.seats_short,
         unseatedCount: result.unseated_count || 0,   // scheduled papers with no seat (venue capacity) — must be 0
+        removedBatches, removedStudents,           // batches removed on the datesheets → no admit card
         // Independent audit (exam_engine.audit): null when it could not run (legacy single-sheet mode)
         auditClean: result.audit ? !!result.audit.clean : null,
         auditHard: result.audit ? (result.audit.hard_counts || {}) : null,

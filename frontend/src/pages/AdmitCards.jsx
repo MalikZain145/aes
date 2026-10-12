@@ -514,7 +514,7 @@ export default function AdmitCards() {
             cardResult.found ? (
               <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', marginBottom: 14, flexWrap: 'wrap', border: `1px solid ${cardResult.feePaid ? '#c9e9d6' : '#f5c9c9'}`, background: cardResult.feePaid ? '#e7f5ec' : '#fdf1f1' }}>
                 <UserCheck size={20} style={{ color: cardResult.feePaid ? '#198754' : '#c53030' }} />
-                <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ flex: 1, minWidth: 'min(220px, 100%)' }}>
                   <div style={{ fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     {cardResult.name || 'Student'} <span style={{ color: 'var(--text-faint)', fontWeight: 600 }}>· {cardResult.reg}</span>
                     <span style={{
@@ -566,7 +566,7 @@ export default function AdmitCards() {
                 <Contact size={18} />
               </div>
               {/* all the admit-card data on ONE line */}
-              <div className="ds-history-info" style={{ flex: 1, minWidth: 240 }}>
+              <div className="ds-history-info" style={{ flex: 1, minWidth: 'min(240px, 100%)' }}>
                 <div className="ds-history-name" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span>{h.title}</span>
                   {idx === 0 && <span className="ds-hist-badge ok">Newest</span>}
@@ -588,7 +588,7 @@ export default function AdmitCards() {
                 </div>
               </div>
               {/* the 4 documents as a 2×2 square of buttons */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, width: 300, flexShrink: 0 }}>
+              <div className="ac-hist-docs" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, width: 'min(300px, 100%)', flexShrink: 0 }}>
                 {examSheets(h.files).map((f) => {
                   const m = docMeta(f.label); const Icon = m.icon;
                   return (

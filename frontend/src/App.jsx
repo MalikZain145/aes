@@ -1,6 +1,8 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
+import { useEffect, useState } from 'react';
 import { useAuth } from './context/AuthContext';
+import PasswordChange from './components/PasswordChange';
 
 import BootScreen from './components/BootScreen';
 import AppLayout from './components/AppLayout';
@@ -62,8 +64,19 @@ export default function App() {
   const { admin, booting } = useAuth();
   const location = useLocation();
 
+  // Accounts on a default password must set their own before using anything.
+  const [forcePw, setForcePw] = useState(false);
+  useEffect(() => { if (admin?.mustChangePassword) setForcePw(true); }, [admin?.mustChangePassword]);
+  useEffect(() => { if (!admin) setForcePw(false); }, [admin]);
+  useEffect(() => {
+    const on = () => { if (localStorage.getItem('abasyn_token')) setForcePw(true); };
+    window.addEventListener('abasyn:password-change-required', on);
+    return () => window.removeEventListener('abasyn:password-change-required', on);
+  }, []);
+
   return (
     <>
+      <AnimatePresence>{!booting && admin && forcePw && <PasswordChange key="pwc" forced onClose={() => { setForcePw(false); window.location.reload(); }} />}</AnimatePresence>
       <AnimatePresence>{booting && <BootScreen key="boot" />}</AnimatePresence>
       {!booting && (
         <AnimatePresence mode="wait">

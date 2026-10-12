@@ -58,6 +58,18 @@ export function AuthProvider({ children }) {
     setAdmin(null);
   }, []);
 
+  // New token + profile after a password change (old sessions are revoked server-side).
+  const applySession = useCallback((token, user) => {
+    if (token) localStorage.setItem('abasyn_token', token);
+    if (user) {
+      setAdmin((prev) => {
+        const merged = { ...(prev || {}), ...user };
+        localStorage.setItem('abasyn_admin', JSON.stringify(merged));
+        return merged;
+      });
+    }
+  }, []);
+
   // Admin edits their own display name.
   const updateProfile = useCallback(async (displayName) => {
     try {
@@ -77,7 +89,7 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       admin, user: admin, role: admin?.role || null,
-      booting, login, logout, updateProfile,
+      booting, login, logout, updateProfile, applySession,
     }}>
       {children}
     </AuthContext.Provider>

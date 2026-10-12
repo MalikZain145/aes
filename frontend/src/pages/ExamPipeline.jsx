@@ -5,6 +5,7 @@ import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { PageHeader } from '../components/ui';
 import './examPipeline.css';
+import ScrollX from '../components/ScrollX';
 
 /**
  * One-click Exam Engine: upload the exam-office reports (any shape — student-wise,
@@ -154,6 +155,7 @@ export default function ExamPipeline() {
             {' '}{job.status === 'running' ? `Running — ${job.stage}` : job.status === 'done' ? 'Done — audit clean' : job.status === 'audit_failed' ? 'Audit failed — nothing published' : 'Failed'}
           </h3>
           {job.result?.datesheets && (
+            <ScrollX className="rsp-x">
             <table className="ep-table">
               <thead><tr><th>Cohort</th><th>Papers</th><th>Days</th><th>Student clashes</th><th>Students with 2 papers/day</th></tr></thead>
               <tbody>
@@ -163,6 +165,7 @@ export default function ExamPipeline() {
                 ))}
               </tbody>
             </table>
+            </ScrollX>
           )}
           {audit && (
             <div className="ep-audit">

@@ -10,6 +10,7 @@ import { useToast } from '../context/ToastContext';
 import { useAuth } from '../context/AuthContext';
 import { PageHeader, EmptyState } from '../components/ui';
 import FancySelect from '../components/FancySelect';
+import ScrollX from '../components/ScrollX';
 
 const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
@@ -186,7 +187,7 @@ function RegistrationTab({ toast }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
               <GraduationCap size={18} style={{ color: 'var(--brand-600)' }} />
               <h3 style={{ margin: 0, fontSize: 15 }}>{editingId ? 'Edit & resubmit' : 'New'} {kind === 'add_drop' ? 'Add / Drop' : 'Registration'} Form</h3>
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap', maxWidth: '100%' }}>
                 <FancySelect value={term} onChange={setTerm} clearable={false} disabled={!!editingId} width={180}
                   options={terms.map((t) => ({ value: t.name, label: t.name }))} />
                 <FancySelect value={kind} onChange={setKind} clearable={false} disabled={!!editingId} width={210}
@@ -200,7 +201,7 @@ function RegistrationTab({ toast }) {
             {/* window banner */}
             <WindowBanner termInfo={termInfo} kind={kind} />
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginTop: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 160px),1fr))', gap: 12, marginTop: 12 }}>
               <ReadonlyField label="Registration No" value={profile?.regNo} />
               <ReadonlyField label="Name" value={profile?.name} />
               <ReadonlyField label="Batch / Program" value={profile?.batch} />
@@ -228,7 +229,7 @@ function RegistrationTab({ toast }) {
             <>
               {/* courses */}
               {kind === 'add_drop' ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 14 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 300px),1fr))', gap: 14 }}>
                   <DropList registered={registered} dropSel={dropSel} toggle={toggleDrop} />
                   <CourseTable title="Courses to ADD" icon={PlusCircle} accent="#2f855a" rows={addRows} h={addH} codeMap={codeMap} />
                 </div>
@@ -373,7 +374,7 @@ function StatusTimeline({ steps, direction }) {
   const seenNote = (s) => (s.key === 'advisor' && s.state === 'seen') ? 'Seen by Advisor'
     : (s.key === 'hod' && s.state === 'seen') ? 'Seen by HoD' : null;
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0, overflowX: 'auto', padding: '4px 0' }}>
+    <ScrollX style={{ display: 'flex', alignItems: 'flex-start', gap: 0, padding: '4px 0' }}>
       {steps.map((s, i) => {
         const color = STEP_COLOR[s.state] || STEP_COLOR.todo;
         const Icon = STEP_ICON[s.state] || Circle;
@@ -408,7 +409,7 @@ function StatusTimeline({ steps, direction }) {
           </div>
         );
       })}
-    </div>
+    </ScrollX>
   );
 }
 
@@ -463,7 +464,7 @@ function TimetableTab({ toast }) {
         </div>
         <button className="btn btn-ghost btn-sm" onClick={load}><RefreshCw size={14} /></button>
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <ScrollX style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 700 }}>
           <thead><tr>
             <th style={ttH(50)}></th>
@@ -491,7 +492,7 @@ function TimetableTab({ toast }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollX>
     </div>
   );
 }
@@ -543,6 +544,7 @@ function MyAttendanceTab({ toast }) {
                 </div>
                 {isOpen && (
                   <div style={{ borderTop: '1px solid var(--border)', padding: '4px 0' }}>
+                    <ScrollX className="rsp-x">
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
                       <thead><tr>{['Date', 'Time', 'Status'].map((h) => (
                         <th key={h} style={{ textAlign: 'left', padding: '6px 16px', fontSize: 10.5, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase' }}>{h}</th>
@@ -557,6 +559,7 @@ function MyAttendanceTab({ toast }) {
                         ))}
                       </tbody>
                     </table>
+                    </ScrollX>
                   </div>
                 )}
               </div>
@@ -645,7 +648,8 @@ function CourseTable({ title, icon: Icon, accent, rows, h, codeMap }) {
         <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
         <button className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto' }} onClick={h.add}><Plus size={14} /> Add course</button>
       </div>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <ScrollX className="rsp-x">
+      <table className="rsp-entry" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr>{['#', 'Course Code', 'Title', 'Cr. Hrs', ''].map((head) => (
             <th key={head} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 11, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase' }}>{head}</th>
@@ -663,6 +667,7 @@ function CourseTable({ title, icon: Icon, accent, rows, h, codeMap }) {
           ))}
         </tbody>
       </table>
+      </ScrollX>
     </div>
   );
 }

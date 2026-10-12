@@ -7,6 +7,7 @@ import {
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import './dispatch.css';
+import ScrollX from './ScrollX';
 
 /**
  * Finance → fee-gated admit-card email dispatch.
@@ -131,7 +132,7 @@ export default function DispatchAdmitCards() {
                   <span><AlertTriangle size={15} /> Admit Cards failed to dispatch to the following students:</span>
                   <button className="btn btn-ghost btn-sm" onClick={printFailures}><Printer size={14} /> Print report</button>
                 </div>
-                <div className="dsp-tablewrap">
+                <ScrollX className="dsp-tablewrap">
                   <table className="dsp-table">
                     <thead><tr><th>#</th><th>Reg No</th><th>Name</th><th>Department</th><th>Email</th><th>Reason</th></tr></thead>
                     <tbody>
@@ -140,7 +141,7 @@ export default function DispatchAdmitCards() {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </ScrollX>
               </div>
             ) : (
               <div className="dsp-allok"><CheckCircle2 size={16} /> Admit cards has been dispatched successfully to all paid students.</div>

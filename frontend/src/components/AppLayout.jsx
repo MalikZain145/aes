@@ -3,7 +3,7 @@ import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Menu, X, Search, Bell, CalendarDays, LogOut, ChevronDown, PanelLeftClose,
-  PanelLeft, Settings, User as UserIcon, CheckCheck, ChevronLeft, ChevronRight, Loader2,
+  PanelLeft, Settings, User as UserIcon, KeyRound, CheckCheck, ChevronLeft, ChevronRight, Loader2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api, { errMsg } from '../api/client';
@@ -13,6 +13,7 @@ import MegaMenu from './MegaMenu';
 import GlobalSearch from './GlobalSearch';
 import CustomReportBuilder from './CustomReportBuilder';
 import AskAbasyn from './AskAbasyn';
+import PasswordChange from './PasswordChange';
 import { Modal } from './ui';
 import { SIDEBAR, SIDEBAR_BY_ROLE, ROLE_LABEL, MENUS, DOWNLOADS } from './navConfig';
 import './layout.css';
@@ -51,6 +52,7 @@ export default function AppLayout() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [calOpen, setCalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
 
   const [notifs, setNotifs] = useState([]);
@@ -353,6 +355,7 @@ export default function AppLayout() {
                       </div>
                     </div>
                     <button className="pop-row" onClick={openEdit}><UserIcon size={16} /> Edit profile name</button>
+                    <button className="pop-row" onClick={() => { setProfileOpen(false); setPwOpen(true); }}><KeyRound size={16} /> Change password</button>
                     <button className="pop-row" onClick={() => { setProfileOpen(false); navigate('/constraints'); }}><Settings size={16} /> Settings</button>
                     <div className="pop-divider" />
                     <button className="pop-row pop-row-danger" onClick={logout}><LogOut size={16} /> Sign out</button>
@@ -368,6 +371,7 @@ export default function AppLayout() {
 
       {isAdmin && <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />}
       {isAdmin && <AskAbasyn />}
+      <AnimatePresence>{pwOpen && <PasswordChange key="pwc-opt" onClose={() => setPwOpen(false)} />}</AnimatePresence>
       <CustomReportBuilder open={builderOpen} onClose={() => setBuilderOpen(false)} />
 
       {/* profile edit modal */}

@@ -12,6 +12,7 @@ import AdmitCardStrip from '../components/AdmitCardStrip';
 import { useToast } from '../context/ToastContext';
 import { Loader } from '../components/ui';
 import './dashboard.css';
+import ScrollX from '../components/ScrollX';
 
 const fadeUp = { initial: { opacity: 0, y: 16 }, animate: { opacity: 1, y: 0 } };
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
@@ -199,7 +200,7 @@ export default function Dashboard() {
               <div className="dash-empty-title">No matches for “{q}”</div>
             </div>
           ) : (
-            <div className="dash-table-wrap">
+            <ScrollX className="dash-table-wrap">
               <table className="dash-table">
                 <thead>
                   <tr><th>Time</th><th>Course</th><th>Section</th><th>Faculty</th><th>Room</th><th>Type</th><th>Clash</th></tr>
@@ -222,7 +223,7 @@ export default function Dashboard() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollX>
           )}
         </motion.div>
 

@@ -9,6 +9,7 @@ import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, EmptyState } from '../components/ui';
 import FancySelect from '../components/FancySelect';
+import ScrollX from '../components/ScrollX';
 
 const todayStr = () => {
   const d = new Date(); const p = (n) => String(n).padStart(2, '0');
@@ -156,7 +157,7 @@ function AttendanceTab({ toast }) {
             message="We couldn't find any course in the database taught by your name. Please contact the Exam Cell if this looks wrong." />
         ) : (
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <label style={{ flex: 1, minWidth: 260 }}>
+            <label style={{ flex: 1, minWidth: 'min(260px, 100%)' }}>
               <span style={fieldLabel}>Course</span>
               <FancySelect value={sel} onChange={onPick} allLabel="Select a course you teach…" placeholder="Select a course you teach…" width="100%"
                 options={courses.map((c) => ({ value: classKey(c), label: `${c.code}${c.section ? ` (${c.section})` : ''} — ${c.name}${c.program ? ` · ${c.program}` : ''} · ${c.registered} students` }))} />
@@ -200,6 +201,7 @@ function AttendanceTab({ toast }) {
           {totalCount === 0 ? (
             <EmptyState icon={Users} title="No registered students" message="No students are registered in this course for the selected program." />
           ) : (
+            <ScrollX className="rsp-x">
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead><tr>{['#', 'Reg No', 'Name', 'Program', 'Status'].map((h) => (
                 <th key={h} style={{ background: 'var(--ink-700)', color: 'var(--on-dark)', textAlign: 'left', padding: '8px 12px', fontSize: 11, fontWeight: 700 }}>{h}</th>
@@ -227,6 +229,7 @@ function AttendanceTab({ toast }) {
                 })}
               </tbody>
             </table>
+            </ScrollX>
           )}
 
           {!locked && totalCount > 0 && (
@@ -249,6 +252,7 @@ function AttendanceTab({ toast }) {
         {records.length === 0 ? (
           <EmptyState icon={Inbox} title="No saved attendance yet" message="Pick a course above, mark the class, and save — it will appear here for download." />
         ) : (
+          <ScrollX className="rsp-x">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr>{['Date', 'Course', 'Program', 'Present', ''].map((h) => (
               <th key={h} style={{ textAlign: 'left', padding: '8px 12px', fontSize: 11, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase' }}>{h}</th>
@@ -267,6 +271,7 @@ function AttendanceTab({ toast }) {
               ))}
             </tbody>
           </table>
+          </ScrollX>
         )}
       </div>
     </div>
@@ -319,7 +324,7 @@ function FacultyTimetableTab({ toast }) {
         </div>
         <button className="btn btn-ghost btn-sm" onClick={load}><RefreshCw size={14} /></button>
       </div>
-      <div style={{ overflowX: 'auto' }}>
+      <ScrollX style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5, minWidth: 700 }}>
           <thead><tr>
             <th style={ttH(50)}></th>
@@ -347,7 +352,7 @@ function FacultyTimetableTab({ toast }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollX>
     </div>
   );
 }
@@ -430,7 +435,7 @@ function FormCard({ form, stage, toast, reload }) {
 
       {open && (
         <div style={{ borderTop: '1px solid var(--border)', padding: 16 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, marginBottom: 14, fontSize: 12.5 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 150px),1fr))', gap: 10, marginBottom: 14, fontSize: 12.5 }}>
             <Meta label="Semester" value={form.semester} />
             <Meta label="Degree" value={form.degree} />
             <Meta label="Phone" value={form.phone} />
@@ -440,7 +445,7 @@ function FormCard({ form, stage, toast, reload }) {
           </div>
 
           {form.kind === 'add_drop' ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 14, marginBottom: 14 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 260px),1fr))', gap: 14, marginBottom: 14 }}>
               <CourseList title="Courses to DROP" accent="#c53030" rows={(form.courses || []).filter((c) => c.action === 'drop')} />
               <CourseList title="Courses to ADD" accent="#2f855a" rows={(form.courses || []).filter((c) => c.action !== 'drop')} />
             </div>
@@ -492,6 +497,7 @@ function CourseList({ title, accent, rows }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
       <div style={{ padding: '7px 12px', fontSize: 11.5, fontWeight: 700, color: '#fff', background: accent, textTransform: 'uppercase', letterSpacing: '.02em' }}>{title} ({rows.length})</div>
+      <ScrollX className="rsp-x">
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
         <thead><tr>{['#', 'Course Code', 'Title', 'Cr. Hrs'].map((h) => (
           <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 10.5, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase', background: 'var(--surface-2,#f4f7f5)' }}>{h}</th>
@@ -509,6 +515,7 @@ function CourseList({ title, accent, rows }) {
           ))}
         </tbody>
       </table>
+      </ScrollX>
     </div>
   );
 }

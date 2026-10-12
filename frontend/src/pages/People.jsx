@@ -8,6 +8,7 @@ import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, EmptyState } from '../components/ui';
 import FancySelect from '../components/FancySelect';
+import ScrollX from '../components/ScrollX';
 
 /**
  * Admin → People & Assignments.
@@ -181,7 +182,7 @@ export default function People() {
           {term && <span style={{ marginLeft: 'auto', fontSize: 12.5, color: 'var(--text-faint)' }}>for <b style={{ color: 'var(--ink-700)' }}>{term}</b></span>}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '18px 20px', alignItems: 'end' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 200px),1fr))', gap: '18px 20px', alignItems: 'end' }}>
           <Field label="Academic term">
             <FancySelect value={term} onChange={setTerm} options={terms.map((t) => ({ value: t.name, label: t.name }))} allLabel="Any term" width="100%" />
           </Field>
@@ -220,7 +221,7 @@ export default function People() {
       {loading ? (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-faint)' }}><Loader2 size={22} className="spin" /> Loading…</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', gap: 18 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 340px),1fr))', gap: 18 }}>
           <AssignTable title="Student Advisors" icon={Users} rows={advisors} cols={['Term', 'Department', 'Batch', 'Advisor']}
             render={(r) => [r.term || 'Any', r.department, r.batch, r.teacherName]} onRemove={removeAssignment} onEdit={startEdit} editId={editId} empty="No advisors assigned yet." />
           <AssignTable title="Heads of Department" icon={ShieldCheck} rows={hods} cols={['Term', 'Department', 'HoD']}
@@ -284,7 +285,7 @@ function AcademicTerms({ terms, selected, onSelect, reload, toast }) {
             ))}
           </div>
           {term && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%, 300px),1fr))', gap: 16 }}>
               <TermWindow term={term} which="registration" label="Registration window" reload={reload} toast={toast} />
               <TermWindow term={term} which="addDrop" label="Add / Drop window" reload={reload} toast={toast} />
             </div>
@@ -375,7 +376,7 @@ function AssignTable({ title, icon: Icon, rows, cols, render, onRemove, onEdit, 
       {rows.length === 0 ? (
         <EmptyState icon={Icon} title={empty} message="" />
       ) : (
-        <div style={{ overflowX: 'auto' }}>
+        <ScrollX style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr>{[...cols, ''].map((h) => (
@@ -399,7 +400,7 @@ function AssignTable({ title, icon: Icon, rows, cols, render, onRemove, onEdit, 
               })}
             </tbody>
           </table>
-        </div>
+        </ScrollX>
       )}
     </div>
   );
