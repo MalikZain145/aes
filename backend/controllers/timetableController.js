@@ -341,7 +341,9 @@ exports.filters = async (req, res) => {
 
 // GET /api/timetable/me — the signed-in student's or teacher's own weekly timetable
 exports.me = async (req, res) => {
-  const run = await publishedRun();
+  // Students / faculty only ever see a timetable the Exam Cell has PUBLISHED —
+  // never a draft or a merely finished run.
+  const run = await TimetableRun.findOne({ published: true }).sort({ publishedAt: -1 }).lean();
   if (!run) return res.json({ hasTimetable: false, entries: [] });
   const u = await User.findById(req.user.id).lean();
   if (!u) return res.status(404).json({ error: 'Profile not found.' });

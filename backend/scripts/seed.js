@@ -28,7 +28,7 @@ const FRESH = process.argv.includes('--fresh');
 
 // Staff portal accounts (students are created later via upload).
 const STAFF_ACCOUNTS = [
-  { role: 'admin',   username: 'examcell.abasynisb.edu.pk', password: 'admin123',   name: 'Exam Cell',      email: 'examcell@abasynisb.edu.pk' },
+  { role: 'admin',   username: 'examination@abasynisb.edu.pk', password: 'admin123', name: 'Exam Cell',      email: 'examination@abasynisb.edu.pk' },
   { role: 'finance', username: 'finance@abasynisb.edu.pk',  password: 'finance123', name: 'Finance Office', email: 'finance@abasynisb.edu.pk' },
   { role: 'faculty', username: 'faculty@abasynisb.edu.pk',  password: 'faculty123', name: 'Faculty',        email: 'faculty@abasynisb.edu.pk' },
 ];

@@ -96,6 +96,9 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   // makes a fresh deploy usable immediately — data is then imported in-app. Existing
   // databases are untouched (it only runs when NO admin exists).
   try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
+  // One-time maintenance (each runs once per database): remove the generated class
+  // timetables, set the Exam Cell / Finance login usernames.
+  try { await require('./utils/oneTimeTasks').runOneTimeTasks(); } catch (e) { console.warn('One-time tasks:', e.message); }
   // Every registered student gets a Student Portal login (reg no / student123):
   // created now for anyone missing, then new registration records are detected
   // automatically and their logins are created too.
@@ -154,7 +157,7 @@ async function seedStaffIfEmpty() {
   const User = require('./models/User');
   if (await User.exists({ role: 'admin' })) return;   // already set up — leave as-is
   const accounts = [
-    { role: 'admin',   username: process.env.ADMIN_USERNAME || 'examcell.abasynisb.edu.pk', password: process.env.ADMIN_PASSWORD || 'admin123', name: 'Exam Cell',      email: 'examcell@abasynisb.edu.pk' },
+    { role: 'admin',   username: 'examination@abasynisb.edu.pk', password: process.env.ADMIN_PASSWORD || 'admin123', name: 'Exam Cell',      email: 'examination@abasynisb.edu.pk' },
     { role: 'finance', username: 'finance@abasynisb.edu.pk', password: 'finance123', name: 'Finance Office', email: 'finance@abasynisb.edu.pk' },
     { role: 'faculty', username: 'faculty@abasynisb.edu.pk', password: 'faculty123', name: 'Faculty',        email: 'faculty@abasynisb.edu.pk' },
   ];
