@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Search, Plus, Pencil, Trash2, BookOpen, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, Plus, Pencil, Trash2, BookOpen, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
 import useDebounce from '../api/useDebounce';
@@ -55,6 +55,20 @@ export default function Courses() {
   }, [debouncedSearch, program, component, page]); // eslint-disable-line
 
   useEffect(() => { load(); }, [load]);
+
+  const [recounting, setRecounting] = useState(false);
+  const recount = async () => {
+    setRecounting(true);
+    try {
+      const res = await api.post('/courses/recompute-enrollment');
+      toast.success(`Enrollment recounted from ${res.data.students} students — ${res.data.changed} course row(s) updated.`);
+      load();
+    } catch (err) {
+      toast.error(errMsg(err, 'Could not recount enrollment.'));
+    } finally {
+      setRecounting(false);
+    }
+  };
 
   useEffect(() => {
     api.get('/courses/programs').then((res) => setPrograms(res.data.programs)).catch(() => {});
@@ -136,7 +150,15 @@ export default function Courses() {
         eyebrow="Manage"
         title="Courses"
         subtitle="Every lecture and lab component the scheduler will place. Add, edit or remove courses — changes apply on the next generation."
-        actions={<button className="btn btn-primary" onClick={openNew}><Plus size={17} /> Add course</button>}
+        actions={(
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn btn-ghost" onClick={recount} disabled={recounting}
+              title="Count every course's enrollment again from all students' registered courses">
+              <RefreshCw size={16} className={recounting ? 'spin' : ''} /> Recount enrollment
+            </button>
+            <button className="btn btn-primary" onClick={openNew}><Plus size={17} /> Add course</button>
+          </div>
+        )}
       />
 
       <div className="toolbar">

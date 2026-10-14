@@ -149,7 +149,10 @@ def _slot_ok(date, s_i, slots=None):
     """Is slot index s_i allowed to carry a paper on this date? Respects the per-day
     SLOT_MASK AND blocked windows (Friday Jumma)."""
     if SLOT_MASK:
-        allowed = SLOT_MASK["weekend"] if date.weekday() >= 5 else SLOT_MASK["weekday"]
+        if date.weekday() == 4 and SLOT_MASK.get("friday") is not None:
+            allowed = SLOT_MASK["friday"]          # BS Friday: 01:00-02:30 → 03:00-04:30
+        else:
+            allowed = SLOT_MASK["weekend"] if date.weekday() >= 5 else SLOT_MASK["weekday"]
         if s_i not in allowed:
             return False
     if BLOCKED_WINDOWS and slots is not None:
@@ -2256,7 +2259,7 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
       • Columns: Day | Date | <slot 1> | <slot 2> [| <slot 3> for mids]
       • Course codes bold + underlined, followed by ": Course Name"
       • Footer: "Examination Office AUIC" bottom-right + "Page X of Y"
-    Portrait A4 (matches the sample).
+    Landscape A4.
     """
     exam_type   = meta["exam_type"]
     heading     = meta["heading"]
@@ -2271,8 +2274,8 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
         return styles[name]
 
     # cell text: "CODE: Name (sections)" with code bold+underlined
-    course_style = S("courseCell", fontName="Helvetica", fontSize=6.6,
-                     leading=8.4, textColor=_INK, alignment=TA_LEFT)
+    course_style = S("courseCell", fontName="Helvetica", fontSize=7.0,
+                     leading=8.8, textColor=_INK, alignment=TA_LEFT)
     day_style  = S("dayCell", fontName="Helvetica-Bold", fontSize=8.5,
                    leading=10.5, textColor=_INK, alignment=TA_CENTER)
     date_style = S("dateCellDark", fontName="Helvetica-Bold", fontSize=7.6,
@@ -2281,10 +2284,10 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
                    leading=11, textColor=_INK, alignment=TA_CENTER)
 
     # ---- page + column widths ---------------------------------------------
-    page = A4  # portrait, like the sample
+    page = landscape(A4)  # landscape — wider paper columns, fewer wrapped names
     usable_w = page[0] - 2.2 * cm
-    day_w  = 2.10 * cm   # fits "Wednesday" on one line (bold 8.5pt + cell padding)
-    date_w = 2.15 * cm
+    day_w  = 2.30 * cm   # fits "Wednesday" on one line (bold 8.5pt + cell padding)
+    date_w = 2.60 * cm
     slot_w = (usable_w - day_w - date_w) / len(slots)
     col_widths = [day_w, date_w] + [slot_w] * len(slots)
 
@@ -2684,6 +2687,18 @@ def run(config: dict) -> dict:
                      "weekend": set(int(i) for i in _mask["weekend"])}
     else:
         SLOT_MASK = None
+    # BS Friday rule (Jumma): on Fridays the 01:00-02:30 column is replaced by
+    # 03:00-04:30. config["friday_slot_swap"] = {"from": "01:00-02:30", "to": "03:00-04:30"}
+    _fs = config.get("friday_slot_swap")
+    if isinstance(_fs, dict) and _fs.get("from") in slots and not SLOT_MASK:
+        _to = str(_fs.get("to") or "03:00-04:30")
+        if _to not in slots:
+            slots = list(slots) + [_to]
+            slots.sort(key=lambda lab: (_slot_time_span(lab) or (9999, 0))[0])
+        _from_i, _to_i = slots.index(_fs["from"]), slots.index(_to)
+        _normal = {i for i in range(len(slots)) if i != _to_i}
+        SLOT_MASK = {"weekday": _normal, "weekend": set(_normal),
+                     "friday": {i for i in range(len(slots)) if i != _from_i}}
     global RESERVE_SLOTS, LIGHT_DAYS
     _ld = config.get("light_days")
     LIGHT_DAYS = {int(i) for i in _ld} if isinstance(_ld, list) and _ld else None

@@ -45,8 +45,18 @@ exports.summary = async (_req, res) => {
     total: lectureCount + labComponentCount,
   };
 
+  // students + enrollments, counted live from the registrations
+  let students = 0; let enrollments = 0;
+  try {
+    const StudentRegistration = require('../models/StudentRegistration');
+    const agg = await StudentRegistration.aggregate([{ $match: { studentId: { $ne: '' } } }, { $group: { _id: null, n: { $sum: 1 }, e: { $sum: { $size: { $ifNull: ['$courses', []] } } } } }]);
+    if (agg[0]) { students = agg[0].n; enrollments = agg[0].e; }
+  } catch { /* optional */ }
+
   res.json({
     counts: {
+      students,
+      enrollments,
       teachers: teacherCount,
       courses: courseCount,
       rooms: roomCount + labCount,

@@ -400,7 +400,10 @@ async function runDatesheetJob(base, dataJson, deptKeys, labelOverride, avoidSch
       slots_override: ['09:00-10:30', '01:00-02:30', '03:00-04:30'],
       slot_day_mask: { weekday: [2], weekend: [0, 1] },
       include_sundays: true,
-    } : {}),
+    } : {
+      // BS: on FRIDAY the 01:00-02:30 paper sits at 03:00-04:30 instead (Jumma)
+      friday_slot_swap: { from: '01:00-02:30', to: '03:00-04:30' },
+    }),
     // Cross-cohort clash resolution: BTech avoids slots where its students
     // already sit a shared gen-ed (BS) paper — CET311-style clashes auto-shift.
     ...(Array.isArray(avoidSchedules) && avoidSchedules.length ? { avoid_clash_schedules: avoidSchedules } : {}),
@@ -1285,6 +1288,30 @@ exports.generateAdmitCards = async (req, res) => {
       if (Object.keys(invDayExclude).length) config.exclude_invigilator_day_load = invDayExclude;
     } catch { /* best-effort — small-room-first for MS still separates them */ }
 
+    // Invigilation duty ONLY for faculty with "Allow Invigilation" on and not
+    // Visiting/Adjunct (Teachers page). Everyone else is passed as blocked so no
+    // spelling variant of their name can slip in.
+    try {
+      const Teacher = require('../models/Teacher');
+      const ts = await Teacher.find({}).select('name aliases designation allowInvigilation isVisiting active').lean();
+      if (ts.length) {
+        const ok = ts.filter((t) => t.active !== false && t.allowInvigilation !== false && !t.isVisiting);
+        const personKey = (n) => String(n || '').toLowerCase().replace(/[^a-z ]+/g, ' ')
+          .replace(/\b(dr|mr|mrs|ms|miss|engr|prof|professor|sir)\b/g, ' ').replace(/\s+/g, '');
+        const okKeys = new Set(ok.map((t) => personKey(t.name)));
+        config.invigilator_pool = ok.map((t) => t.name);
+        config.invigilator_blocked = ts.filter((t) => !ok.includes(t))
+          .flatMap((t) => [t.name, ...(t.aliases || [])])
+          // never block a spelling that an allowed teacher also uses (same key as admit_cards._person_key)
+          .filter((n) => !okKeys.has(personKey(n)));
+        config.invigilator_aliases = Object.fromEntries(ok.filter((t) => (t.aliases || []).length).map((t) => [t.name, t.aliases]));
+        // Duty priority by designation: Lab Engineers/Demonstrators every exam day,
+        // Lecturers up to 6 days, Assistant Professors 4-5, Professors only if needed.
+        const { dutyTier } = require('../utils/facultyNames');
+        config.invigilator_profiles = Object.fromEntries(ok.map((t) => [t.name, { tier: dutyTier(t.designation) }]));
+      }
+    } catch (e) { console.warn('invigilator pool:', e.message); }
+
     configPath = path.join(OUTPUT_DIR, `acconfig_${stamp}.json`);
     fs.writeFileSync(configPath, JSON.stringify(config));
 
@@ -1725,7 +1752,9 @@ function friendlyName(record, file) {
     base = [main, examLabel, term].filter(Boolean).join(' - ');
     if (/report/i.test(label)) base += ' - Analysis Report';
   } else if (record.kind === 'admit_cards') {
-    const main = [level, 'Admit Cards'].filter(Boolean).join(' ');
+    // one-click batch = every program together → don't call it "Undergraduate"
+    const allProgs = m.cohort === 'all' || /All Programs/i.test(record.title || '');
+    const main = [allProgs ? 'All Programs' : level, 'Admit Cards'].filter(Boolean).join(' ');
     base = [main, examLabel, term].filter(Boolean).join(' - ');
     if (/seating/i.test(label)) base += ' - Seating Plan';
     else if (/identif/i.test(label)) base += ' - Identification Sheets';

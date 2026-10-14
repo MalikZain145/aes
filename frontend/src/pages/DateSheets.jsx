@@ -5,7 +5,7 @@ import {
   CalendarClock, FileText, Download, Loader2, Sparkles, CheckCircle2,
   CalendarDays, Clock, BookMarked, X, Plus, Layers, GitMerge, Trash2,
   Database, Upload, FileSpreadsheet, AlertCircle, Pencil, Search, MinusCircle, Building2,
-  Users, ChevronDown,
+  Users, ChevronDown, RefreshCw,
 } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
@@ -87,6 +87,7 @@ export default function DateSheets() {
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchSearch, setBatchSearch] = useState('');
   const [editingId, setEditingId] = useState(null);   // datesheet open in the editor
+  const [refreshFor, setRefreshFor] = useState(null);  // datesheet being updated with new data
   const batchRestoreRef = useRef(null);   // batches to re-select after "edit" changes the level
 
   // ── holiday review state ──
@@ -966,6 +967,10 @@ export default function DateSheets() {
                 title="Open this datesheet — move, merge, unmerge or delete papers, then save (clash-checked)">
                 <Pencil size={14} /> Edit
               </button>
+              <button className="btn btn-ghost ds-edit-btn" onClick={() => setRefreshFor(h)} disabled={generating || busy}
+                title="Update this datesheet with the current registration data — every paper and merge stays where it is, missing theory courses are added clash-free">
+                <RefreshCw size={14} /> Update
+              </button>
               {(h.files || []).map((f) => (
                 <button key={f.filename} className="btn btn-ghost" onClick={() => download(h, f)} disabled={busy}>
                   <Download size={15} /> {f.label === 'Analysis Report' ? 'Report' : 'PDF'}
@@ -975,6 +980,17 @@ export default function DateSheets() {
           ))}
         </div>
       )}
+
+      {/* ═══ Update a datesheet with new registration data ═══ */}
+      <AnimatePresence>
+        {refreshFor && (
+          <RefreshDatesheet
+            record={refreshFor}
+            onClose={() => setRefreshFor(null)}
+            onDone={() => { setRefreshFor(null); loadHistory(); }}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ═══ Datesheet editor ═══ */}
       <AnimatePresence>
@@ -1295,5 +1311,92 @@ export default function DateSheets() {
         </div>
       </Modal>
     </div>
+  );
+}
+
+
+/* Preview → apply: bring an existing datesheet up to date with the current data. */
+function RefreshDatesheet({ record, onClose, onDone }) {
+  const toast = useToast();
+  const [preview, setPreview] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const res = await api.post(`/generate/datesheet/${record._id}/refresh`, { dryRun: true });
+        if (live) setPreview(res.data.report);
+      } catch (err) {
+        if (live) setError(errMsg(err, 'Could not check this datesheet.'));
+      } finally {
+        if (live) setLoading(false);
+      }
+    })();
+    return () => { live = false; };
+  }, [record._id]);
+
+  const apply = async () => {
+    setApplying(true);
+    try {
+      const res = await api.post(`/generate/datesheet/${record._id}/refresh`, {});
+      const r = res.data.report || {};
+      toast.success(`${record.title} updated — ${r.added?.length || 0} added, ${r.moved?.length || 0} moved, ${r.dropped?.length || 0} removed.${res.data.staleAdmitCards ? ' Regenerate the admit cards.' : ''}`);
+      onDone();
+    } catch (err) {
+      setError(errMsg(err, 'Could not update the datesheet.'));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const r = preview;
+  const nothing = r && !r.added?.length && !r.moved?.length && !r.dropped?.length && !r.clashesBefore;
+  const Row = ({ items, render }) => (items && items.length ? <ul className="dsr-list">{items.map((x, i) => <li key={i}>{render(x)}</li>)}</ul> : <p className="dsr-none">None</p>);
+
+  return (
+    <motion.div className="ds-modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.div className="ds-modal ds-modal-wide" initial={{ scale: 0.94, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, opacity: 0 }}>
+        <button className="ds-modal-close" onClick={onClose} disabled={applying} aria-label="Close"><X size={18} /></button>
+        <h3 className="font-display">Update with new data</h3>
+        <p className="ds-merge-hint">
+          <b>{record.title}</b> — every paper keeps its date and slot and every merge stays as it is. New students are included,
+          theory courses that have students but no paper are added in a clash-free slot, and a clash caused by the new
+          registrations is fixed by moving the smaller paper.
+        </p>
+        {loading && <div className="dsr-loading"><Loader2 size={18} className="spin" /> Checking against the current registrations…</div>}
+        {error && <div className="dsr-error"><AlertCircle size={15} /> {error}</div>}
+        {r && (
+          <div className="dsr-body">
+            <div className="dsr-stats">
+              <div><b>{r.studentsBefore} → {r.studentsAfter}</b><span>students</span></div>
+              <div><b>+{r.newStudents || 0}</b><span>new students</span></div>
+              <div className={r.added?.length ? 'ok' : ''}><b>{r.added?.length || 0}</b><span>courses added</span></div>
+              <div className={r.moved?.length ? 'warn' : ''}><b>{r.moved?.length || 0}</b><span>papers moved</span></div>
+              <div className={r.clashesAfter ? 'err' : 'ok'}><b>{r.clashesBefore} → {r.clashesAfter}</b><span>clashes</span></div>
+            </div>
+            {nothing && <p className="dsr-ok"><CheckCircle2 size={15} /> Already up to date — nothing to change.</p>}
+            <h4>Added</h4>
+            <Row items={r.added} render={(x) => <><b>{x.code}</b> {x.name} · {x.students} student{x.students === 1 ? '' : 's'} → {x.date} {x.slot}{x.note ? <em> ({x.note})</em> : null}</>} />
+            <h4>Moved</h4>
+            <Row items={r.moved} render={(x) => <><b>{x.codes.join(' / ')}</b> · {x.students} students · {x.from.date} {x.from.slot} → {x.to.date} {x.to.slot} <em>({x.reason})</em></>} />
+            <h4>Removed (no students registered any more)</h4>
+            <Row items={r.dropped} render={(x) => <><b>{x.code}</b> {x.name}</>} />
+            {r.unplaced?.length > 0 && (<><h4 className="err">Could not be placed — add them in the editor</h4>
+              <Row items={r.unplaced} render={(x) => <><b>{x.code}</b> {x.name} · {x.students} students — {x.reason}</>} /></>)}
+            {r.autoExcludedBatches?.length > 0 && (<><h4>Batches left out (same removed intake)</h4>
+              <Row items={r.autoExcludedBatches} render={(x) => x} /></>)}
+          </div>
+        )}
+        <div className="ds-modal-actions">
+          <button className="btn btn-ghost" onClick={onClose} disabled={applying}>Cancel</button>
+          <button className="btn btn-primary" onClick={apply} disabled={loading || applying || !r || nothing || r.clashesAfter > 0}>
+            {applying ? <><Loader2 size={15} className="spin" /> Updating…</> : <><RefreshCw size={15} /> Update datesheet</>}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }

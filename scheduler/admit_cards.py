@@ -1045,7 +1045,7 @@ def render_seating_plan(sessions_layout, meta, out_path):
             logo_cell = RLImage(logo_reader(logo), width=2.2 * cm, height=2.2 * cm, kind="proportional")
         except Exception:
             logo_cell = ""
-    header = Table([[P(meta["campus_line"] + "<br/>" + meta["heading"] +
+    header = Table([[P(meta["campus_line"] + "<br/>" + _sub_heading(meta) +
                        "<br/><font size=9 color='#5c6b63'>Examination Seating Plan (Invigilator Copy)</font>",
                        S["campus"]), logo_cell]],
                    colWidths=[content_w - 2.6 * cm, 2.6 * cm])
@@ -1262,6 +1262,68 @@ def _person_key(name):
     return re.sub(r"\s+", "", n)
 
 
+# other spellings of each invigilator (Teacher.aliases) → so the conflict-of-interest
+# ban also catches "Mr. M. Shahrukh Pasha" teaching a paper "Mr. Muhammad Shahrukh Pasha" guards
+_ALIAS_KEYS = {}
+
+
+# Designation priority (Faculty List): name -> {"tier": lab|lect|asst|senior|other}
+#   lab    Lab Engineer / Demonstrator / Technician / Assistant → duty on EVERY exam day
+#   lect   Lecturer (Jr./Sr.)                                  → up to 6 exam days
+#   asst   Assistant Professor                                  → 4–5 exam days
+#   other  (office / coordinator)                               → 4–5 exam days
+#   senior Professor / Associate Professor / Dean               → only when nobody else is free
+_PROFILES = {}
+# (floor, target): everyone is first brought up to the floor (so Assistant Professors get
+# their 4 days), then Lecturers fill toward 6 and Assistant Professors toward 5.
+_TIER_DAYS = {"lab": None, "lect": (4, 6), "asst": (4, 5), "other": (4, 5), "senior": (0, 0)}
+
+
+def _sub_heading(meta):
+    """Heading under the campus line — without repeating the campus name
+    ("Abasyn University Islamabad Campus — Mid Term …" → "Mid Term …")."""
+    h = str(meta.get("heading") or "")
+    c = str(meta.get("campus_line") or "")
+    if c and h.startswith(c):
+        h = h[len(c):].lstrip(" —-–:,")
+    return h
+
+
+def _set_profiles(profiles):
+    _PROFILES.clear()
+    for name, p in (profiles or {}).items():
+        t = str((p or {}).get("tier") or "").lower()
+        if t in _TIER_DAYS:
+            _PROFILES[str(name)] = t
+
+
+def _date_key(d):
+    for fmt in ("%d-%b-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(str(d), fmt)
+        except ValueError:
+            pass
+    return datetime.max
+
+
+def _slot_span(label):
+    m = re.match(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", str(label or ""))
+    if not m:
+        return None
+    f = lambda h, mm: (int(h) + (12 if int(h) < 8 else 0)) * 60 + int(mm)
+    return f(m.group(1), m.group(2)), f(m.group(3), m.group(4))
+
+
+def _set_alias_keys(aliases):
+    _ALIAS_KEYS.clear()
+    for name, alist in (aliases or {}).items():
+        _ALIAS_KEYS[str(name)] = {_person_key(a) for a in (alist or []) if a} | {_person_key(name)}
+
+
+def _keys_of(name):
+    return _ALIAS_KEYS.get(str(name)) or {_person_key(name)}
+
+
 def build_course_teachers(teacher_map):
     """code -> {person_key, ...} from the 'A / B' teacher strings."""
     out = defaultdict(set)
@@ -1319,8 +1381,50 @@ def assign_invigilators(sessions_layout, pool, exclude_by_session=None,
     for name, days in exclude_day_load.items():
         for d, n in (days or {}).items():
             day_load[d][name] += int(n)
-    out = []
-    for sess in sessions_layout:
+    # exam days, in order — for the designation day targets
+    all_dates = sorted({s.get("date", "") for s in sessions_layout}, key=_date_key)
+    date_pos = {d: i for i, d in enumerate(all_dates)}
+    n_dates = len(all_dates)
+    worked = defaultdict(set)                 # teacher -> dates with a duty
+    for name, days in exclude_day_load.items():
+        for d, n in (days or {}).items():
+            if int(n):
+                worked[name].add(d)
+
+    def rank(t, date):
+        """Smaller = picked first. Without designation data: least-loaded first (old rule)."""
+        if not _PROFILES:
+            return (0, 0, dl_of(t, date), load[t], t)
+        tier = _PROFILES.get(t, "lect")
+        w = worked[t]
+        new_day = date not in w
+        left = max(1, n_dates - date_pos.get(date, 0))       # exam days left, today included
+        if tier == "senior":
+            return (4, 0, dl_of(t, date), load[t], t)
+        lo, hi = (n_dates, n_dates) if tier == "lab" else _TIER_DAYS[tier]
+        if not new_day:
+            return (2, 0, dl_of(t, date), load[t], t)        # 2nd duty today — after fresh hands
+        if len(w) >= hi:
+            return (3, len(w) - hi, load[t], t)               # already did their days → last resort
+        # lab staff first every day; then whoever is furthest from their day target
+        # (share of the target already done), so Lecturers head for 6 days and
+        # Assistant Professors for 4-5 at the same pace
+        if tier == "lab":
+            return (0, -1.0, load[t], t)
+        if len(w) < lo:
+            return (0, len(w) / float(lo) - 0.0001 * (lo - len(w)) / left, load[t], t)
+        return (1, len(w) / float(hi), load[t], t)
+
+    def dl_of(t, date):
+        return day_load[date][t]
+
+    out = [None] * len(sessions_layout)
+    # chronological order, so "exam days left" is right (output keeps the plan's order)
+    order = sorted(range(len(sessions_layout)),
+                   key=lambda i: (_date_key(sessions_layout[i].get("date", "")),
+                                  (_slot_span(sessions_layout[i].get("slot", "")) or (0, 0))[0], i))
+    for _si in order:
+        sess = sessions_layout[_si]
         # teachers already on duty in ANOTHER cohort's roster at this date+slot
         date = sess.get('date', '')
         skey = f"{date}|{sess.get('slot', '')}"
@@ -1345,23 +1449,25 @@ def assign_invigilators(sessions_layout, pool, exclude_by_session=None,
             # candidates: not already on duty this session, and under the daily cap;
             # least-loaded first (fewest same-day duties, then fewest total).
             cands = [t for t in pool if t not in used and dl[t] < max_per_day
-                     and _person_key(t) not in banned]
-            for t in sorted(cands, key=lambda x: (dl[x], load[x], x)):
+                     and not (_keys_of(t) & banned)]
+            for t in sorted(cands, key=lambda x: rank(x, date)):
                 assigned.append(t)
                 used.add(t)
                 load[t] += 1
                 dl[t] += 1
+                worked[t].add(date)
                 if len(assigned) >= need:
                     break
             # if the daily cap starved the room (rare), fall back to least-loaded
             # available teachers so a room is never left unstaffed.
             if len(assigned) < need:
-                for t in sorted((x for x in pool if x not in used and _person_key(x) not in banned),
+                for t in sorted((x for x in pool if x not in used and not (_keys_of(x) & banned)),
                                 key=lambda x: (load[x], x)):
                     assigned.append(t)
                     used.add(t)
                     load[t] += 1
                     dl[t] += 1
+                    worked[t].add(date)
                     if len(assigned) >= need:
                         break
             chosen[room["name"]] = assigned
@@ -1370,13 +1476,13 @@ def assign_invigilators(sessions_layout, pool, exclude_by_session=None,
             n_students = len(room["rows"])
             papers = len({r["course"] for r in room["rows"]})
             rooms_out.append((room["name"], n_students, papers, chosen.get(room["name"], [])))
-        out.append(rooms_out)
+        out[_si] = rooms_out
     return out
 
 
 def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_session=None,
                         max_per_day=2, exclude_day_load=None, course_teachers=None,
-                        roster_out=None):
+                        roster_out=None, roster_fixed=None, subtitle=None):
     S = _styles()
     logo = _find_logo()
     doc = SimpleDocTemplate(
@@ -1395,8 +1501,8 @@ def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_sessio
             logo_cell = RLImage(logo_reader(logo), width=2.2 * cm, height=2.2 * cm, kind="proportional")
         except Exception:
             logo_cell = ""
-    header = Table([[P(meta["campus_line"] + "<br/>" + meta["heading"] +
-                       "<br/><font size=9 color='#5c6b63'>Invigilation Duty Roster</font>",
+    header = Table([[P(meta["campus_line"] + "<br/>" + _sub_heading(meta) +
+                       f"<br/><font size=9 color='#5c6b63'>{subtitle or 'Invigilation Duty Roster'}</font>",
                        S["campus"]), logo_cell]],
                    colWidths=[content_w - 2.6 * cm, 2.6 * cm])
     header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -1404,9 +1510,12 @@ def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_sessio
     story.append(header)
     story.append(Spacer(1, 0.3 * cm))
 
-    roster = assign_invigilators(sessions_layout, pool, exclude_by_session,
-                                 max_per_day=max_per_day, exclude_day_load=exclude_day_load,
-                                 course_teachers=course_teachers)
+    # roster_fixed = the duties ALREADY assigned in a batch (course pack re-print) —
+    # never re-assign, just print them.
+    roster = roster_fixed if roster_fixed is not None else assign_invigilators(
+        sessions_layout, pool, exclude_by_session,
+        max_per_day=max_per_day, exclude_day_load=exclude_day_load,
+        course_teachers=course_teachers)
     if roster_out is not None:
         roster_out.extend(roster)
     for si, sess in enumerate(sessions_layout):
@@ -1489,6 +1598,94 @@ def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_sessio
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ORCHESTRATION
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def course_pack(config: dict) -> dict:
+    """Re-print ONE course's documents from an issued batch (no re-seating, no
+    re-assignment) — read from the batch's _layout.json:
+      out_idsheets : identification sheet(s) of that course, per room
+      out_seating  : seating plan rows of that course's students, per room
+      out_invig    : invigilation roster of every room the course is written in
+                     (room totals + the invigilators already on duty there)
+    config: layout_json, course, out_idsheets?, out_seating?, out_invig?, meta?, code_title?"""
+    with open(config["layout_json"], "r", encoding="utf-8") as f:
+        L = json.load(f)
+    code = re.sub(r"\s+", "", str(config.get("course") or "")).upper()
+    if not code:
+        raise ValueError("No course code given.")
+    meta = {"campus_line": "Abasyn University Islamabad Campus", "heading": "", "exam_label": "Examination",
+            "program_level": "Undergraduate"}
+    # the batch's own meta (in the layout) wins; the caller's is a fallback for old layouts
+    meta.update({k: v for k, v in (config.get("meta") or {}).items() if v})
+    meta.update({k: v for k, v in (L.get("meta") or {}).items() if v})
+    code_title = dict(L.get("code_title") or {})
+    code_title.update(config.get("code_title") or {})
+    sess_f, roster, sids, rooms_n = [], [], set(), 0
+    for s in L.get("sessions") or []:
+        rooms, rr = [], []
+        for rm in s.get("rooms") or []:
+            rows = [r for r in rm.get("rows") or [] if str(r.get("course", "")).upper() == code]
+            if not rows:
+                continue
+            rooms.append({"name": rm["name"], "rows": rows})
+            rr.append((rm["name"], len(rm.get("rows") or []), len({r.get("course") for r in rm.get("rows") or []}),
+                       list(rm.get("invigilators") or [])))
+            sids.update(str(r.get("sid")) for r in rows)
+        if rooms:
+            sess_f.append({**{k: v for k, v in s.items() if k != "rooms"}, "rooms": rooms})
+            roster.append(rr)
+            rooms_n += len(rooms)
+    if not sess_f:
+        return {"status": "error", "error": f"{code} is not written in any room of this admit-card batch."}
+    title = code_title.get(code, "")
+    out = {}
+    if config.get("out_idsheets"):
+        render_identification_sheets(sess_f, meta, code_title, config["out_idsheets"])
+        out["idsheets"] = config["out_idsheets"]
+    if config.get("out_seating"):
+        m2 = dict(meta)
+        m2["heading"] = f"{meta.get('heading', '')}<br/><font size=9>{code}{(' — ' + title) if title else ''}</font>"
+        render_seating_plan(sess_f, m2, config["out_seating"])
+        out["seating"] = config["out_seating"]
+    if config.get("out_invig"):
+        render_invigilation(sess_f, meta, [], config["out_invig"], roster_fixed=roster,
+                            subtitle=f"Invigilation — {code}{(' ' + title) if title else ''}")
+        out["invig"] = config["out_invig"]
+    invigilators = sorted({n for rr in roster for (_r, _n, _p, inv) in rr for n in inv})
+    return {
+        "status": "ok", "course": code, "title": title, "students": len(sids), "rooms": rooms_n,
+        "sessions": [{"date": s.get("date"), "day": s.get("day"), "slot": s.get("slot"),
+                      "rooms": [{"name": rm["name"], "students": len(rm["rows"])} for rm in s["rooms"]]} for s in sess_f],
+        "invigilators": invigilators, "files": out,
+    }
+
+
+def rerender_docs(config: dict) -> dict:
+    """Re-print a batch's IDENTIFICATION SHEETS and INVIGILATION ROSTER from its
+    _layout.json after a student's course was added / edited / deleted — nobody is
+    re-seated and no invigilator is re-assigned. config: layout_json, out_idsheets?, out_invig?"""
+    with open(config["layout_json"], "r", encoding="utf-8") as f:
+        L = json.load(f)
+    meta = {"campus_line": "Abasyn University Islamabad Campus", "heading": "", "exam_label": "Examination",
+            "program_level": "Undergraduate"}
+    meta.update({k: v for k, v in (config.get("meta") or {}).items() if v})
+    meta.update({k: v for k, v in (L.get("meta") or {}).items() if v})
+    sessions = [{**{k: v for k, v in s.items() if k != "rooms"},
+                 "rooms": [{"name": r["name"], "rows": r.get("rows") or []} for r in s.get("rooms") or [] if r.get("rows")]}
+                for s in L.get("sessions") or []]
+    sessions = [s for s in sessions if s["rooms"]]
+    out = {}
+    if config.get("out_idsheets"):
+        render_identification_sheets(sessions, meta, L.get("code_title") or {}, config["out_idsheets"])
+        out["idsheets"] = config["out_idsheets"]
+    if config.get("out_invig"):
+        inv = {(s.get("date"), s.get("slot"), r["name"]): r.get("invigilators") or []
+               for s in L.get("sessions") or [] for r in s.get("rooms") or []}
+        roster = [[(r["name"], len(r["rows"]), len({x.get("course") for x in r["rows"]}),
+                    inv.get((s.get("date"), s.get("slot"), r["name"]), [])) for r in s["rooms"]] for s in sessions]
+        render_invigilation(sessions, meta, [], config["out_invig"], roster_fixed=roster)
+        out["invig"] = config["out_invig"]
+    return {"status": "ok", "sessions": len(sessions), "files": out}
+
+
 def run(config: dict) -> dict:
     campus_line = config.get("campus_line") or "Abasyn University Islamabad Campus"
     teacher_map = build_teacher_map(config)
@@ -1958,6 +2155,21 @@ def run(config: dict) -> dict:
             if _p and _p.upper() != "TBA":
                 _invig.add(_p)
     invig_pool = sorted(_invig)
+    # Faculty settings from the Teachers page: ONLY teachers with "Allow Invigilation"
+    # on and not Visiting/Adjunct are in `invigilator_pool`. When the backend sends
+    # it, it replaces the course-teacher pool completely; `invigilator_blocked` is a
+    # second safety net (never assign these names, whatever their spelling).
+    if config.get("invigilator_pool") is not None:
+        invig_pool = sorted({str(t).strip() for t in config.get("invigilator_pool") or []
+                             if str(t).strip() and str(t).strip().upper() != "TBA"})
+    _blocked = {_person_key(b) for b in (config.get("invigilator_blocked") or []) if b}
+    if _blocked:
+        invig_pool = [t for t in invig_pool if _person_key(t) not in _blocked]
+    _set_alias_keys(config.get("invigilator_aliases") or {})
+    _set_profiles(config.get("invigilator_profiles") or {})
+    print(f"[admit] invigilator pool: {len(invig_pool)} teacher(s)"
+          f"{' (from faculty settings)' if config.get('invigilator_pool') is not None else ''}"
+          f"{f', {len(_blocked)} blocked' if _blocked else ''}", file=sys.stderr)
     render_identification_sheets(sessions_layout, meta, code_title, out_idsheets)
     _roster = []
     _all_ct = build_all_course_teachers(config, teacher_map)
@@ -1986,6 +2198,8 @@ def run(config: dict) -> dict:
                     for si, sess in enumerate(sessions_layout)],
                 "venues": venues,
                 "course_teachers": {k: sorted(v) for k, v in _all_ct.items()},
+                "meta": meta,
+                "code_title": code_title,
                 "turnover_min": turnover,
                 "turnover_relaxed": turnover_relaxed,
             }, f, ensure_ascii=False)
@@ -2112,11 +2326,14 @@ def main():
         }
 
     try:
-        result = run(cfg)
+        mode = cfg.get("mode")
+        result = course_pack(cfg) if mode == "course_pack" else rerender_docs(cfg) if mode == "rerender_docs" else run(cfg)
     except Exception as e:
         print(json.dumps({"status": "failed", "error": str(e)}))
         sys.exit(1)
     print(json.dumps(result))
+    if result.get("status") == "error":
+        sys.exit(2)
 
 
 if __name__ == "__main__":

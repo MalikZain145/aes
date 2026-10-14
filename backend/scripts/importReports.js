@@ -138,15 +138,16 @@ function printPlan(plan, files) {
   console.log(`Teachers\n  new ${plan.teachersNew.length}`);
 }
 
-async function main() {
-  const files = pickFiles();
+/**
+ * Apply both reports to the DB using the CURRENT mongoose connection (the server's,
+ * or the one main() opens). Returns the plan + final counts. `log` defaults to console.log.
+ */
+async function applyReports(files, { keepMissing = false, dry = false, log = console.log } = {}) {
   const sw = parseDataset(files.students);
   const cw = parseDataset(files.classwise);
   if (!(sw.studentRegistrations || []).length) throw new Error(`${files.students} has no student registrations (expected the student-wise report).`);
   if (!(cw.courses || []).length) throw new Error(`${files.classwise} has no courses (expected the class-wise report).`);
 
-  const connectDB = require('../config/db');
-  await connectDB(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_scheduler');
   const Course = require('../models/Course');
   const Teacher = require('../models/Teacher');
   const StudentRegistration = require('../models/StudentRegistration');
@@ -156,16 +157,15 @@ async function main() {
     courses: await Course.find({}).select('fullCode code noExam active').lean(),
     teachers: (await Teacher.find({}).select('name').lean()).map((t) => t.name),
   };
-  const plan = planImport(sw, cw, current, { keepMissing: KEEP_MISSING });
-  printPlan(plan, files);
-
-  if (DRY) { console.log('\nDry run — nothing written.\n'); await mongoose.disconnect(); return; }
+  const plan = planImport(sw, cw, current, { keepMissing });
+  if (log === console.log) printPlan(plan, files);
+  if (dry) return { plan, dry: true };
 
   if (plan.studentsRemoved.length) {
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     const bk = path.join(OUTPUT_DIR, `backup_removed_students_${Date.now()}.json`);
     fs.writeFileSync(bk, JSON.stringify(plan.studentsRemoved, null, 1));
-    console.log(`\nBackup of removed students → ${bk}`);
+    log(`Backup of removed students → ${bk}`);
     await StudentRegistration.deleteMany({ _id: { $in: plan.studentsRemoved.map((r) => r._id) } });
   }
   if (plan.studentUpserts.length) {
@@ -181,25 +181,45 @@ async function main() {
   if (plan.coursesDeactivated.length) {
     await Course.updateMany({ fullCode: { $in: plan.coursesDeactivated } }, { $set: { active: false } });
   }
-  if (plan.teachersNew.length) await Teacher.insertMany(plan.teachersNew, { ordered: false }).catch(() => null);
+  // Once the Faculty List is loaded, the faculty roster comes ONLY from it — course
+  // teachers in the report are not added as separate teachers.
+  if (plan.teachersNew.length && !(await Teacher.exists({ inFacultyList: true }))) await Teacher.insertMany(plan.teachersNew, { ordered: false }).catch(() => null);
 
   const { deriveCourseMeta } = require('../utils/deriveCourseMeta');
   await deriveCourseMeta();
+  // enrollment = students actually registered in each course (fresh count)
+  try { const en = await require('../utils/enrollment').recomputeEnrollment(); log(`Enrollment recounted from registrations: ${en.changed} course row(s) changed`); } catch (e) { log(`Enrollment recount skipped: ${e.message}`); }
 
   // Student Portal logins for every reg number (new ones get password student123)
   const { ensureStudentAccounts } = require('../utils/studentAccounts');
   const logins = await ensureStudentAccounts();
-  console.log(`Student logins: ${logins.created} new (password "student123") · ${logins.total} total`);
+  log(`Student logins: ${logins.created} new (password "student123") · ${logins.total} total`);
+  try {
+    const { ensureFacultyAccounts } = require('../utils/facultyImport');
+    const f = await ensureFacultyAccounts();
+    log(`Faculty logins: ${f.created} new (password "faculty123") · ${f.total} total`);
+  } catch (e) { log(`Faculty logins skipped: ${e.message}`); }
 
   const [sc, cc, ac, tc] = await Promise.all([
     StudentRegistration.countDocuments({}), Course.countDocuments({}), Course.countDocuments({ active: true }), Teacher.countDocuments({}),
   ]);
-  console.log(`\n✓ Imported. DB now: ${sc} students · ${ac} active course rows (${cc} total) · ${tc} teachers\n`);
-  try { const { logActivity } = require('../utils/logger'); await logActivity('dataset.upload', `Reports imported via script: ${path.basename(files.students)} + ${path.basename(files.classwise)}`, 'success'); } catch { /* optional */ }
+  const summary = `students: ${plan.studentsNew} new, ${plan.studentsChanged} changed, ${plan.studentsRemoved.length} removed → ${sc} total · `
+    + `courses: ${plan.coursesNew} new, ${plan.coursesUpdated} updated, ${plan.coursesDeactivated.length} deactivated → ${ac} active (${cc} rows) · teachers ${tc}`;
+  log(`✓ Imported. ${summary}`);
+  try { const { logActivity } = require('../utils/logger'); await logActivity('dataset.upload', `Reports imported: ${path.basename(files.students)} + ${path.basename(files.classwise)}`, 'success'); } catch { /* optional */ }
+  return { plan, summary, counts: { students: sc, courses: cc, activeCourses: ac, teachers: tc } };
+}
+
+async function main() {
+  const files = pickFiles();
+  const connectDB = require('../config/db');
+  await connectDB(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_scheduler');
+  const r = await applyReports(files, { keepMissing: KEEP_MISSING, dry: DRY });
+  if (r.dry) console.log('\nDry run — nothing written.\n');
   await mongoose.disconnect();
 }
 
 if (require.main === module) {
   main().catch(async (e) => { console.error('\n✗ Import failed:', e.message); try { await mongoose.disconnect(); } catch { /* ignore */ } process.exit(1); });
 }
-module.exports = { planImport };
+module.exports = { planImport, applyReports, pickFiles };

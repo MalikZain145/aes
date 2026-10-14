@@ -254,7 +254,7 @@ export default function Dashboard() {
       {/* ── Quick overview ── */}
       <div className="dash-overview">
         <OverviewCard title="Courses Overview" icon={BookOpen} total={counts.courses ?? 0} loading={loading}
-          rows={[['Lectures', comp.lecture, 'ok'], ['Labs', comp.lab, 'info']]} />
+          rows={[['Lectures', comp.lecture, 'ok'], ['Labs', comp.lab, 'info'], ['Students', counts.students ?? 0, 'ok'], ['Enrollments', counts.enrollments ?? 0, 'info']]} />
         <OverviewCard title="Faculty Overview" icon={Users} total={counts.teachers ?? 0} loading={loading}
           rows={[['Active', counts.teachers ?? 0, 'ok'], ['On Leave', 0, 'warn']]} />
         <OverviewCard title="Rooms Overview" icon={DoorOpen} total={counts.rooms ?? 0} loading={loading}

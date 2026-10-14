@@ -24,22 +24,37 @@ export default function ScrollX({ className = '', style, children, ...rest }) {
     setState((s) => (s.left === left && s.right === right && s.tall === tall ? s : { left, right, tall }));
   }, []);
 
-  useLayoutEffect(update);
+  // Measure after mount, then only when something really changes (size, content,
+  // scroll). Never on every render — a measure → setState → render cycle on each
+  // commit can loop forever when a table re-renders while scrolled.
+  useLayoutEffect(() => { update(); }, [update]);
   useEffect(() => {
     const el = ref.current;
     if (!el) return undefined;
-    el.addEventListener('scroll', update, { passive: true });
-    window.addEventListener('resize', update);
+    let raf = 0;
+    const schedule = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(update); };
+    el.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
     let ro;
+    let mo;
     if (typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(update);
+      ro = new ResizeObserver(schedule);
       ro.observe(el);
       if (el.firstElementChild) ro.observe(el.firstElementChild);
     }
+    if (typeof MutationObserver !== 'undefined') {
+      mo = new MutationObserver(() => {
+        if (ro && el.firstElementChild) ro.observe(el.firstElementChild);
+        schedule();
+      });
+      mo.observe(el, { childList: true, subtree: true });
+    }
     return () => {
-      el.removeEventListener('scroll', update);
-      window.removeEventListener('resize', update);
+      cancelAnimationFrame(raf);
+      el.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
       if (ro) ro.disconnect();
+      if (mo) mo.disconnect();
     };
   }, [update]);
 

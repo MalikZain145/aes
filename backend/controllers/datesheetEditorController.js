@@ -44,13 +44,23 @@ const MASKED = {
   weekday: ['03:00-04:30'],
   weekend: ['09:00-10:30', '01:00-02:30'],
 };
+// BS Friday rule (Jumma): the 01:00-02:30 paper sits at 03:00-04:30 on Fridays.
+const BS_FRIDAY = { from: '01:00-02:30', to: '03:00-04:30' };
+const isFriday = (iso) => new Date(iso + 'T00:00:00').getDay() === 5;
+
 function gridFor(cohort, sheetSlots, dates) {
   let slots = [...sheetSlots];
   if (cohort === 'btech' || cohort === 'pg') {
     for (const s of MASKED.slots) if (!slots.includes(s)) slots.push(s);
   }
+  const bsFriday = cohort === 'bs' && slots.includes(BS_FRIDAY.from) && dates.some(isFriday);
+  if (bsFriday && !slots.includes(BS_FRIDAY.to)) slots.push(BS_FRIDAY.to);
   slots.sort((a, b) => ((span(a) || [0])[0] - (span(b) || [0])[0]));
   const allowed = dates.map((iso) => {
+    if (bsFriday) {
+      const skip = isFriday(iso) ? BS_FRIDAY.from : BS_FRIDAY.to;
+      return slots.map((s, i) => (s === skip ? -1 : i)).filter((i) => i >= 0);
+    }
     if (cohort !== 'btech' && cohort !== 'pg') return slots.map((_, i) => i);
     const ok = isWeekend(iso) ? MASKED.weekend : MASKED.weekday;
     return slots.map((s, i) => (ok.includes(s) ? i : -1)).filter((i) => i >= 0);
@@ -288,4 +298,30 @@ exports.saveEditor = async (req, res) => {
   }
 };
 
+// POST /api/generate/datesheet/:id/refresh   { dryRun? }
+exports.refresh = async (req, res) => {
+  try {
+    const { refreshDatesheet } = require('../utils/datesheetRefresh');
+    const dryRun = !!(req.body && req.body.dryRun);
+    const { record, report } = await refreshDatesheet(req.params.id, { dryRun });
+    const staleCards = dryRun ? 0 : await GeneratedFile.countDocuments({ kind: 'admit_cards', archived: { $ne: true }, examType: record.examType });
+    res.status(report.saved === false && !dryRun ? 409 : 200).json({ ok: report.saved !== false, dryRun, record, report, staleAdmitCards: staleCards > 0, error: report.error });
+  } catch (err) {
+    console.error('datesheet refresh:', err.message);
+    res.status(err.status || 500).json({ error: err.message || 'Could not update the datesheet.' });
+  }
+};
+
+// POST /api/generate/datesheets/refresh-all
+exports.refreshAll = async (req, res) => {
+  try {
+    const { refreshAllDatesheets } = require('../utils/datesheetRefresh');
+    const reports = await refreshAllDatesheets({ dryRun: !!(req.body && req.body.dryRun) });
+    res.json({ ok: reports.every((r) => r.saved !== false), reports });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Could not update the datesheets.' });
+  }
+};
+
 module.exports._test = { findClashes, gridFor, snapToCourses, span };
+module.exports._internals = { cohortOfProgram, loadRecord, datesheetCohort, gridFor, snapToCourses, studentsFor, externalPapers, findClashes };

@@ -32,10 +32,21 @@ router.get('/admit-cards/progress/:token', adminOrFinance, ctrl.getAdmitCardsPro
 router.get('/admit-card/find', adminOrFinance, ctrl.findStudentCard);
 router.get('/admit-card/pdf', adminOrFinance, ctrl.studentCardPdf);
 router.get('/tags', adminOrFinance, ctrl.generateTags);
+// Course pack: one course's ID sheets / seating / invigilation / admit cards from the issued batch
+const cp = require('../controllers/admitCoursePackController');
+router.get('/admit-course/search', adminOrFinance, cp.search);
+router.get('/invigilation-xlsx', adminOrFinance, cp.batchXlsx);
+router.get('/admit-course/:code/xlsx', adminOrFinance, cp.courseXlsx);
+router.get('/admit-course/:code', adminOrFinance, cp.summary);
+router.get('/admit-course/:code/pdf/:doc', adminOrFinance, cp.pdf);
 
 // Datesheet editor: open the grid, then save edits (clash-checked, replaces the old PDF)
 router.get('/datesheet/:id/editor', admin, ed.openEditor);
 router.post('/datesheet/:id/editor', admin, ed.saveEditor);
+// Update an existing datesheet with the current registrations (keeps every placement +
+// merge, adds missing theory courses clash-free, fixes clashes from new students)
+router.post('/datesheet/:id/refresh', admin, ed.refresh);
+router.post('/datesheets/refresh-all', admin, ed.refreshAll);
 
 router.get('/files', adminOrFinance, ctrl.listFiles);
 router.get('/batches', admin, ctrl.listBatches);

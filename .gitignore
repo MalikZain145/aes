@@ -33,3 +33,7 @@ backend/_*.js
 
 # local import data (student PII — never commit to public repo)
 backend/data/
+
+# scheduler output subdirs + emails (junk/test — never commit)
+scheduler/output/*/
+scheduler/output/*.eml

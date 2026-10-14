@@ -152,3 +152,14 @@ exports.count = async (_req, res) => {
   const total = await Course.countDocuments({ active: true });
   res.json({ total });
 };
+
+// POST /api/courses/recompute-enrollment — recount every course from the registrations
+exports.recomputeEnrollment = async (_req, res) => {
+  try {
+    const r = await require('../utils/enrollment').recomputeEnrollment();
+    try { await require('../utils/logger').logActivity('course.enrollment', `Enrollment recounted from student registrations (${r.changed} row(s) changed)`, 'success'); } catch { /* optional */ }
+    res.json({ ok: true, ...r });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Could not recount enrollment.' });
+  }
+};

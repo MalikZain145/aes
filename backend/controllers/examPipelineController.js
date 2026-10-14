@@ -133,7 +133,7 @@ async function saveIngestToDb(exportJson, { updateExisting }) {
     haveT.add(t.toLowerCase());
     tDocs.push({ name: t });
   }
-  if (tDocs.length) { await Teacher.insertMany(tDocs, { ordered: false }).catch(() => null); out.teachersInserted = tDocs.length; }
+  if (tDocs.length && !(await Teacher.exists({ inFacultyList: true }))) { await Teacher.insertMany(tDocs, { ordered: false }).catch(() => null); out.teachersInserted = tDocs.length; }
   return out;
 }
 

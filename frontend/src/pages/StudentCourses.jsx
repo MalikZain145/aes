@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Pencil, Trash2, Check, X, ChevronLeft, ChevronRight, GraduationCap, Loader2, Download, FileText } from 'lucide-react';
+import { Search, Pencil, Trash2, Check, X, ChevronLeft, ChevronRight, GraduationCap, Loader2, Download, FileText, Plus } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { downloadFile } from '../api/download';
 import { useToast } from '../context/ToastContext';
@@ -21,6 +21,7 @@ export default function StudentCourses() {
   const [total, setTotal] = useState(0);
   const [edit, setEdit] = useState(null);         // { reg, code, value }
   const [confirm, setConfirm] = useState(null);   // { reg, code }
+  const [adding, setAdding] = useState(null);     // { reg, value }
   const [updated, setUpdated] = useState(null);   // { reg, id, files:[{label,filename}] } — freshly re-printed PDFs
 
   const load = useCallback(async () => {
@@ -46,6 +47,18 @@ export default function StudentCourses() {
       load();
     } catch (e) { toast.error(errMsg(e)); } finally { setBusy(''); }
   };
+  const doAdd = async (reg, code) => {
+    const c = String(code || '').trim().toUpperCase().replace(/\s+/g, '');
+    if (!c) { toast.error('Enter the course code to add.'); return; }
+    setBusy(`${reg}|+`);
+    try {
+      const res = await api.post(`/exam/student-courses/${encodeURIComponent(reg)}/course`, { action: 'add', code: c });
+      setAdding(null);
+      toast.success(res.data.note || `${c} added${res.data.admitUpdated ? ' — admit card updated' : ''}.`);
+      if (res.data.downloads) setUpdated({ reg, syncing: res.data.financeSyncing, ...res.data.downloads });
+      load();
+    } catch (e) { toast.error(errMsg(e)); } finally { setBusy(''); }
+  };
   const doDelete = async () => {
     const { reg, code } = confirm; setConfirm(null); setBusy(`${reg}|${code}`);
     try {
@@ -60,7 +73,7 @@ export default function StudentCourses() {
   return (
     <div>
       <PageHeader eyebrow="Exam Cell" title="Student Courses" icon={GraduationCap}
-        subtitle="Every student's registered courses (registration-number order). Edit or delete a course — the admit card & seating update for that student only." />
+        subtitle="Every student's registered courses (registration-number order). Add, edit or delete a course — the admit card, seating plan, ID sheets & invigilation update for that student only." />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0', flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 'min(220px, 100%)' }}>
@@ -76,7 +89,7 @@ export default function StudentCourses() {
           <FileText size={16} color="#198754" />
           <span style={{ fontSize: 13.5 }}>
             <b>{updated.reg}</b>'s updated admit card is ready — Finance's per-student card, print and email now serve this version too. Only this student's seat changed; no one else was moved.
-            {updated.syncing ? " Finance's full batch PDF and seating plan are refreshing in the background (~1 min)." : ''}
+            {updated.syncing ? " Finance's full batch PDF, seating plan, ID sheets and invigilation roster are refreshing in the background (~1 min)." : ''}
           </span>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
             {(updated.files || []).map((f) => (
@@ -134,6 +147,23 @@ export default function StudentCourses() {
                         );
                       })}
                       {(r.courses || []).length === 0 && <span style={{ color: 'var(--text-faint)', fontSize: 12.5 }}>— none —</span>}
+                      {adding && adding.reg === r.studentId ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'var(--surface-2,#f2f8f5)', border: '1px solid var(--brass,#198754)', borderRadius: 8, padding: '2px 6px' }}>
+                          <input autoFocus className="input" style={{ height: 26, width: 104, fontSize: 12 }} placeholder="Course code"
+                            value={adding.value} onChange={(e) => setAdding({ ...adding, value: e.target.value.toUpperCase() })}
+                            onKeyDown={(e) => { if (e.key === 'Enter') doAdd(r.studentId, adding.value); if (e.key === 'Escape') setAdding(null); }} />
+                          <button className="icon-btn" title="Add — seats the paper on this student's admit card, seating plan, ID sheet & invigilation" disabled={busy === `${r.studentId}|+`} onClick={() => doAdd(r.studentId, adding.value)}>
+                            {busy === `${r.studentId}|+` ? <Loader2 size={13} className="spin" /> : <Check size={13} color="#198754" />}
+                          </button>
+                          <button className="icon-btn" title="Cancel" onClick={() => setAdding(null)}><X size={13} /></button>
+                        </span>
+                      ) : (
+                        <button className="btn btn-ghost btn-sm" style={{ height: 28, padding: '0 10px', fontSize: 12, borderStyle: 'dashed' }} disabled={!!busy}
+                          title="Add a course to this student — the admit card, seating plan, ID sheet and invigilation update"
+                          onClick={() => { setEdit(null); setAdding({ reg: r.studentId, value: '' }); }}>
+                          <Plus size={13} /> Add course
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

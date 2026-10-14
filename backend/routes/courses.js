@@ -11,6 +11,7 @@ router.get('/programs', ctrl.programs);
 router.get('/departments', ctrl.departments);
 router.get('/count', ctrl.count);
 router.post('/', ctrl.create);
+router.post('/recompute-enrollment', ctrl.recomputeEnrollment);
 router.put('/:id', ctrl.update);
 router.delete('/:id', ctrl.remove);
 

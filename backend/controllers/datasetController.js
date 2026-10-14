@@ -40,12 +40,16 @@ exports.uploadDataset = async (req, res) => {
     }
 
     if (replace) {
-      await Promise.all([Course.deleteMany({}), Teacher.deleteMany({}), StudentRegistration.deleteMany({})]);
+      // Teachers are NOT wiped: they carry Faculty IDs, faculty logins and invigilation
+      // settings. New names from the report are added below.
+      await Promise.all([Course.deleteMany({}), StudentRegistration.deleteMany({})]);
     }
 
     // Teachers
     let tCreated = 0;
-    for (const t of teachers) {
+    // once the Faculty List is loaded it is the only source of teachers
+    const rosterLoaded = await Teacher.exists({ inFacultyList: true });
+    for (const t of rosterLoaded ? [] : teachers) {
       const exists = await Teacher.findOne({ name: t.name });
       if (!exists) {
         await Teacher.create({ name: t.name, email: t.email || '', facultyId: t.facultyId || '' });
@@ -103,6 +107,10 @@ exports.uploadDataset = async (req, res) => {
     if (studentRegistrations.length) {
       try { studentLogins = await require('../utils/studentAccounts').kickStudentAccountSync(); } catch (e) { console.error('student logins:', e.message); }
     }
+    // enrollment = students actually registered in each course (fresh count)
+    if (studentRegistrations.length) { try { await require('../utils/enrollment').recomputeEnrollment(); } catch (e) { console.error('enrollment:', e.message); } }
+    // every teacher gets a 4-digit Faculty ID + Faculty Portal login (faculty123)
+    try { await require('../utils/facultyImport').ensureFacultyAccounts(); } catch (e) { console.error('faculty logins:', e.message); }
 
     // Always derive program/department/level from the student data so BS/MS
     // department lists are correct (program-driven, not code-number driven).

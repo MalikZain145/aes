@@ -205,4 +205,57 @@ async function spliceCardPage({ batchPdfPath, pageIndex, cardPdfPath }) {
   return { ok: true, sizeBytes: fileSize(batchPdfPath) };
 }
 
-module.exports = { regenForStudent, renderBatchSeating, spliceCardPage };
+/**
+ * After a student's course is added / edited / deleted: rebuild the batch's
+ * _layout.json from the stored seats (AdmitVerification) — invigilators of every
+ * room are KEPT exactly — then re-print the batch's Identification Sheets and
+ * Invigilation Roster from it. The course search (ID sheets / seating / invigilation /
+ * Excel) reads this layout, so it is current too. Nobody is re-seated or re-assigned.
+ */
+async function syncBatchDocs({ batch }) {
+  const files = batch.files || [];
+  const cardsFile = files.find((f) => /admit cards/i.test(f.label || ''));
+  if (!cardsFile) return { error: 'batch has no admit-card PDF' };
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cardsFile.filename).replace(/\.pdf$/i, '_layout.json'));
+  if (!fs.existsSync(layoutPath)) return { error: 'batch has no layout (generated before this feature) — regenerate to refresh ID sheets / invigilation' };
+  const old = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const inv = new Map();
+  for (const s of old.sessions || []) for (const r of s.rooms || []) inv.set(`${s.date}|${s.slot}|${r.name}`, r.invigilators || []);
+  const sessions = await buildSessionsLayout(null, { batchId: batch._id });
+  const next = {
+    ...old,
+    sessions: sessions.map((s) => ({
+      ...s,
+      rooms: s.rooms.map((r) => ({ name: r.name, rows: r.rows.map((x) => ({ ...x, time: s.slot })), invigilators: inv.get(`${s.date}|${s.slot}|${r.name}`) || [] })),
+    })),
+    syncedAt: new Date().toISOString(),
+  };
+  const tmp = `${layoutPath}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(next));
+  fs.renameSync(tmp, layoutPath);
+
+  const ids = files.find((f) => /identif/i.test(f.label || ''));
+  const invF = files.find((f) => /invigil/i.test(f.label || ''));
+  if (!ids && !invF) return { ok: true, layoutPath };
+  const sample = await AdmitVerification.findOne({ batchId: batch._id }).lean();
+  const cfg = {
+    mode: 'rerender_docs', layout_json: layoutPath, meta: metaFromAv(sample, 'Abasyn University Islamabad Campus'),
+    out_idsheets: ids ? path.join(OUTPUT_DIR, path.basename(ids.filename)) : undefined,
+    out_invig: invF ? path.join(OUTPUT_DIR, path.basename(invF.filename)) : undefined,
+  };
+  const cfgPath = layoutPath.replace(/_layout\.json$/, `_rerendercfg_${Date.now()}.json`);
+  fs.writeFileSync(cfgPath, JSON.stringify(cfg));
+  let out;
+  try {
+    out = await runPython(path.join(SCHEDULER_DIR, 'admit_cards.py'), ['--config', cfgPath], { timeoutMs: 300000 });
+  } finally {
+    try { fs.unlinkSync(cfgPath); } catch { /* ignore */ }
+  }
+  const parsed = (() => { try { return JSON.parse((out.stdout || '').trim().split('\n').pop()); } catch { return {}; } })();
+  if (out.code !== 0 || parsed.status !== 'ok') return { error: parsed.error || `re-render exited ${out.code}` };
+  if (ids) ids.sizeBytes = fileSize(cfg.out_idsheets);
+  if (invF) invF.sizeBytes = fileSize(cfg.out_invig);
+  return { ok: true, layoutPath };
+}
+
+module.exports = { regenForStudent, renderBatchSeating, spliceCardPage, syncBatchDocs, buildSessionsLayout };
