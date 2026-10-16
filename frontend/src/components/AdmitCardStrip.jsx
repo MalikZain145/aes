@@ -117,19 +117,19 @@ export default function AdmitCardStrip() {
   const docUrl = (key) => `/generate/admit-course/${encodeURIComponent(course.code)}/pdf/${key}?batchId=${course.batch.id}`;
   const downloadDoc = async (d) => {
     setDocBusy(d.key);
-    try { await downloadFile(`${docUrl(d.key)}&download=1`, `${course.code}_${d.name.replace(/\s+/g, '')}.pdf`); }
+    try { await downloadFile(`${docUrl(d.key)}&download=1&v=${Date.now()}`, `${course.code}_${d.name.replace(/\s+/g, '')}.pdf`); }
     finally { setTimeout(() => setDocBusy(''), 1200); }
   };
 
   const xlsx = async (url, name, key) => {
     setDocBusy(key);
-    try { await downloadFile(url, name); }
+    try { await downloadFile(`${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`, name); }
     finally { setTimeout(() => setDocBusy(''), 1200); }
   };
 
   const download = async (f) => {
     setBusy(true);
-    try { await downloadFile(`/generate/files/${rec._id}/download/${encodeURIComponent(f.filename)}`, f.filename); }
+    try { await downloadFile(`/generate/files/${rec._id}/download/${encodeURIComponent(f.filename)}?v=${Date.now()}`, f.filename); }
     catch { /* ignore */ }
     finally { setBusy(false); }
   };

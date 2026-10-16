@@ -41,6 +41,7 @@ router.post('/admit-cards/:id/sections', admin, async (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 router.get('/invigilation-xlsx', adminOrFinance, cp.batchXlsx);
+router.get('/invigilation-pdf', adminOrFinance, cp.batchPdf);
 router.get('/admit-course/:code/xlsx', adminOrFinance, cp.courseXlsx);
 router.get('/admit-course/:code', adminOrFinance, cp.summary);
 router.get('/admit-course/:code/pdf/:doc', adminOrFinance, cp.pdf);

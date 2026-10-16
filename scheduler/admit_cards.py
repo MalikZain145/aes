@@ -1885,10 +1885,12 @@ def roster_xlsx(config: dict) -> dict:
     meta.update({k: v for k, v in (L.get("meta") or {}).items() if v})
     title = roster_title(meta, f"{code}" if code else None)
     blocks = roster_blocks(sessions, roster)
-    render_roster_xlsx(blocks, title, config["out_xlsx"], by_teacher=config.get("by_teacher"))
+    if config.get("out_xlsx"):
+        render_roster_xlsx(blocks, title, config["out_xlsx"], by_teacher=config.get("by_teacher"))
     if config.get("out_pdf"):
         render_roster_pdf(blocks, title, config["out_pdf"])
-    return {"status": "ok", "sittings": len(blocks), "rooms": sum(len(b["rooms"]) for b in blocks), "file": config["out_xlsx"]}
+    return {"status": "ok", "sittings": len(blocks), "rooms": sum(len(b["rooms"]) for b in blocks),
+            "file": config.get("out_xlsx") or config.get("out_pdf")}
 
 
 def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_session=None,

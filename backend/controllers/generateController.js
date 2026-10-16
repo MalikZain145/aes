@@ -1833,11 +1833,27 @@ exports.downloadFile = async (req, res) => {
   // Prevent path traversal
   const safe = path.basename(filename);
   const filePath = path.join(OUTPUT_DIR, safe);
+  // never let the browser re-use an older copy of a re-printed file
+  res.setHeader('Cache-Control', 'no-store');
+
+  // invigilation roster of an admit-card batch → always re-built fresh from the seating
+  // layout in the Exam Office duty-roster format (works even if the stored PDF is gone)
+  if (record.kind === 'admit_cards' && /_Invigilation\.pdf$/i.test(safe)) {
+    try {
+      const buf = await require('./admitCoursePackController').invigilationPdfOf(record);
+      if (buf) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${friendlyName(record, match).replace(/"/g, '')}"`);
+        return res.end(buf);
+      }
+    } catch (e) { console.warn('invigilation re-build:', e.message); }
+  }
+
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({ error: 'File no longer exists on disk. Regenerate it.' });
   }
 
-  res.download(filePath, friendlyName(record, match));
+  res.download(filePath, friendlyName(record, match), { cacheControl: false, lastModified: false, etag: false });
 };
 
 /**

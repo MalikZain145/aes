@@ -244,7 +244,6 @@ exports.pdf = async (req, res) => {
 /* ───────────── Excel (editable) invigilation roster ───────────── */
 
 async function rosterWorkbook(layoutPath, code, title) {
-  const XLSX = require('xlsx');
   const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
   const Teacher = require('../models/Teacher');
   const info = new Map();
@@ -279,40 +278,43 @@ async function rosterWorkbook(layoutPath, code, title) {
     line.push('');
     aoa.push(line);
   }
-  // Exam Office duty-roster format (same as the PDF): built by admit_cards.py with openpyxl.
-  // The plain table below is only a fallback if Python is not available.
+  // Exam Office duty-roster format (same as the PDF), built by admit_cards.py with openpyxl.
+  // No old-style fallback any more: if Python fails the error is shown, never the old format.
   const byTeacher = [...perT.entries()].sort((a, b) => a[0].localeCompare(b[0]))
     .map(([n, p]) => { const t = who(n); return [n, t.facultyId || '', t.designation || '', p.duties, p.dates.size, p.list.join('  |  ')]; });
-  try {
-    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const cfgPath = path.join(OUTPUT_DIR, `rosterxlsx_${stamp}.json`);
-    const outPath = path.join(OUTPUT_DIR, `rosterxlsx_${stamp}.xlsx`);
-    fs.writeFileSync(cfgPath, JSON.stringify({ mode: 'roster_xlsx', layout_json: layoutPath, code: code || '', out_xlsx: outPath, by_teacher: byTeacher }));
-    try {
-      const { code: rc, stdout } = await runPython(path.join(SCHEDULER_DIR, 'admit_cards.py'), ['--config', cfgPath], { timeoutMs: 3 * 60 * 1000 });
-      const last = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}';
-      let r = {}; try { r = JSON.parse(last); } catch { r = {}; }
-      if (rc === 0 && r.status === 'ok' && fs.existsSync(outPath)) return fs.readFileSync(outPath);
-    } finally {
-      for (const x of [cfgPath, outPath]) { try { fs.unlinkSync(x); } catch { /* ignore */ } }
-    }
-  } catch (e) { console.warn('roster xlsx (python):', e.message); }
+  void aoa; void title;
+  return (await rosterFiles(layoutPath, code, { xlsx: true, byTeacher })).xlsx;
+}
 
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = head.map((h) => ({ wch: /Invigilator/.test(h) ? 30 : /Papers/.test(h) ? 34 : /Signature/.test(h) ? 24 : 13 }));
-  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(aoa.length - 1, 1), c: head.length - 1 } }) };
-  XLSX.utils.book_append_sheet(wb, ws, 'Invigilation');
-  const tAoa = [['Teacher', 'Faculty ID', 'Designation', 'Duties', 'Exam days', 'Duty list (date · time · room)']];
-  for (const [n, p] of [...perT.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const t = who(n);
-    tAoa.push([n, t.facultyId || '', t.designation || '', p.duties, p.dates.size, p.list.join('  |  ')]);
+/** fresh duty roster (Exam Office format) straight from the batch layout — xlsx and/or pdf buffers */
+async function rosterFiles(layoutPath, code, { xlsx = false, pdf = false, byTeacher = null } = {}) {
+  const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const cfgPath = path.join(OUTPUT_DIR, `roster_${stamp}.json`);
+  const xPath = path.join(OUTPUT_DIR, `roster_${stamp}.xlsx`);
+  const pPath = path.join(OUTPUT_DIR, `roster_${stamp}.pdf`);
+  fs.writeFileSync(cfgPath, JSON.stringify({ mode: 'roster_xlsx', layout_json: layoutPath, code: code || '',
+    out_xlsx: xlsx ? xPath : '', out_pdf: pdf ? pPath : '', by_teacher: byTeacher }));
+  try {
+    const { code: rc, stdout, stderr } = await runPython(path.join(SCHEDULER_DIR, 'admit_cards.py'), ['--config', cfgPath], { timeoutMs: 3 * 60 * 1000 });
+    const last = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}';
+    let r = {}; try { r = JSON.parse(last); } catch { r = {}; }
+    const ok = rc === 0 && r.status === 'ok' && (!xlsx || fs.existsSync(xPath)) && (!pdf || fs.existsSync(pPath));
+    if (!ok) {
+      const why = r.error || String(stderr || stdout || '').trim().split('\n').slice(-3).join(' ').slice(-400) || `exit code ${rc}`;
+      console.warn('⚠ duty roster (python) failed:', why);
+      throw Object.assign(new Error(`Could not build the duty roster: ${why}`), { status: 500 });
+    }
+    return { xlsx: xlsx ? fs.readFileSync(xPath) : null, pdf: pdf ? fs.readFileSync(pPath) : null };
+  } finally {
+    for (const x of [cfgPath, xPath, pPath]) { try { fs.unlinkSync(x); } catch { /* ignore */ } }
   }
-  const ts = XLSX.utils.aoa_to_sheet(tAoa);
-  ts['!cols'] = [{ wch: 32 }, { wch: 11 }, { wch: 26 }, { wch: 8 }, { wch: 10 }, { wch: 90 }];
-  XLSX.utils.book_append_sheet(wb, ts, 'By teacher');
-  if (title) wb.Props = { Title: title };
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+/** the batch's invigilation roster PDF, always re-built in the Exam Office format */
+async function invigilationPdfOf(rec) {
+  const layout = layoutOf(rec);
+  if (!layout) return null;
+  return (await rosterFiles(layout, null, { pdf: true })).pdf;
 }
 
 function sendXlsx(res, buf, name) {
@@ -344,4 +346,20 @@ exports.batchXlsx = async (req, res) => {
   }
 };
 
-module.exports._test = { norm, courseIndex, layoutOf };
+// GET /api/generate/invigilation-pdf[?batchId=]  → the whole batch's duty roster (PDF, Exam Office format)
+exports.batchPdf = async (req, res) => {
+  try {
+    const list = await batches(req.query.batchId);
+    if (!list.length) return res.status(404).json({ error: 'No admit cards with seating data yet — generate the admit cards first.' });
+    const buf = (await rosterFiles(list[0].layout, null, { pdf: true })).pdf;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="Invigilation_Roster.pdf"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(buf);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || 'Could not build the duty roster PDF.' });
+  }
+};
+
+exports.invigilationPdfOf = invigilationPdfOf;
+module.exports._test = { norm, courseIndex, layoutOf, rosterFiles };
