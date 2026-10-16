@@ -279,6 +279,25 @@ async function rosterWorkbook(layoutPath, code, title) {
     line.push('');
     aoa.push(line);
   }
+  // Exam Office duty-roster format (same as the PDF): built by admit_cards.py with openpyxl.
+  // The plain table below is only a fallback if Python is not available.
+  const byTeacher = [...perT.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([n, p]) => { const t = who(n); return [n, t.facultyId || '', t.designation || '', p.duties, p.dates.size, p.list.join('  |  ')]; });
+  try {
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const cfgPath = path.join(OUTPUT_DIR, `rosterxlsx_${stamp}.json`);
+    const outPath = path.join(OUTPUT_DIR, `rosterxlsx_${stamp}.xlsx`);
+    fs.writeFileSync(cfgPath, JSON.stringify({ mode: 'roster_xlsx', layout_json: layoutPath, code: code || '', out_xlsx: outPath, by_teacher: byTeacher }));
+    try {
+      const { code: rc, stdout } = await runPython(path.join(SCHEDULER_DIR, 'admit_cards.py'), ['--config', cfgPath], { timeoutMs: 3 * 60 * 1000 });
+      const last = String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}';
+      let r = {}; try { r = JSON.parse(last); } catch { r = {}; }
+      if (rc === 0 && r.status === 'ok' && fs.existsSync(outPath)) return fs.readFileSync(outPath);
+    } finally {
+      for (const x of [cfgPath, outPath]) { try { fs.unlinkSync(x); } catch { /* ignore */ } }
+    }
+  } catch (e) { console.warn('roster xlsx (python):', e.message); }
+
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = head.map((h) => ({ wch: /Invigilator/.test(h) ? 30 : /Papers/.test(h) ? 34 : /Signature/.test(h) ? 24 : 13 }));

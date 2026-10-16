@@ -65,7 +65,7 @@ import hashlib
 import argparse
 import random
 from datetime import datetime
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, OrderedDict
 from pathlib import Path
 
 import pandas as pd
@@ -1131,9 +1131,12 @@ def build_admit_card(student, rows, meta, S, logo_path, content_w):
             style.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
     tbl.setStyle(TableStyle(style))
 
-    # (The issuance note is drawn at the very bottom of the PAGE — see _footer.)
+    # exam-hall instructions sit right under the course table (plain black, no background)
+    ins_h = ParagraphStyle("insH", fontName="Helvetica-Bold", fontSize=10.5, leading=14, textColor=colors.black)
+    ins_b = ParagraphStyle("insB", fontName="Helvetica", fontSize=10, leading=13.5, textColor=colors.black)
+    instr = [Paragraph("Instructions:", ins_h)] + [Paragraph(t, ins_b) for t in CARD_INSTRUCTIONS]
     inner = Table(
-        [[header], [idband], [Spacer(1, 4)], [tbl]],
+        [[header], [idband], [Spacer(1, 4)], [tbl], [Spacer(1, 8)]] + [[x] for x in instr],
         colWidths=[content_w],
     )
     inner.setStyle(TableStyle([
@@ -1141,6 +1144,14 @@ def build_admit_card(student, rows, meta, S, logo_path, content_w):
         ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
     return KeepTogether([inner])
+
+
+# printed right under the course table on EVERY admit card (all cards, single-card downloads too)
+CARD_INSTRUCTIONS = [
+    "1. Students must bring their Student ID Card or original CNIC, along with their admit card.",
+    "2. Mobile phones, smartwatches, calculators (unless explicitly permitted in the course syllabus), bags, and other electronic "
+    "communication devices are strictly prohibited in the examination hall.",
+]
 
 
 def render_admit_cards(students_rows, meta, out_path, progress_file=None):
@@ -1152,7 +1163,7 @@ def render_admit_cards(students_rows, meta, out_path, progress_file=None):
     PAGE = landscape(A4)   # (width, height) with width > height
     doc = SimpleDocTemplate(
         out_path, pagesize=PAGE,
-        leftMargin=1.3 * cm, rightMargin=1.3 * cm, topMargin=1.2 * cm, bottomMargin=1.1 * cm,
+        leftMargin=1.3 * cm, rightMargin=1.3 * cm, topMargin=1.2 * cm, bottomMargin=1.2 * cm,
         title="Abasyn University — Admit Cards",
     )
     content_w = PAGE[0] - 2.6 * cm
@@ -1182,15 +1193,6 @@ def render_admit_cards(students_rows, meta, out_path, progress_file=None):
     def _footer(canvas, doc_):
         # one card == one page, so the page number is the live "cards made" count
         _write_progress(getattr(doc_, "page", 0))
-        # issuance note at the very bottom of the page — plain black, no background
-        canvas.saveState()
-        canvas.setFont("Helvetica-BoldOblique", 8.5)
-        canvas.setFillColor(colors.black)
-        canvas.drawCentredString(
-            PAGE[0] / 2, 0.7 * cm,
-            "This system generated admit card is issued with the approval of the "
-            "Finance Office and does not require any signature or stamp.")
-        canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     _write_progress(n)   # ensure it ends exactly at the total
@@ -1658,36 +1660,240 @@ def assign_invigilators(sessions_layout, pool, exclude_by_session=None,
     return out
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DUTY ROSTER (Exam Office format) — same layout in the PDF and in the Excel file:
+#   title · per sitting: "Monday, August 10, 2026-9:00am-10:30am", then
+#   Room No | Course Code | Strength | Invigilator 1 | Invigilator 2 | Invigilator 3
+#   one line per paper in the room ("MT114: B[22]" = course, section, students),
+#   room / strength / invigilators merged down the room's lines.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _ampm(t):
+    m = re.match(r"\s*(\d{1,2}):(\d{2})", str(t or ""))
+    if not m:
+        return str(t or "")
+    h, mi = int(m.group(1)), m.group(2)
+    pm = h < 8 or h == 12
+    return f"{h}:{mi}{'pm' if pm else 'am'}"
+
+
+def roster_session_label(sess):
+    try:
+        d = datetime.strptime(str(sess.get("date")), "%d-%b-%Y")
+        dl = f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.year}"
+    except Exception:
+        dl = f"{sess.get('day', '')}, {sess.get('date', '')}"
+    a, _, b = str(sess.get("slot") or "").partition("-")
+    return f"{dl}-{_ampm(a)}-{_ampm(b)}"
+
+
+def roster_title(meta, subtitle=None):
+    h = re.sub(r"<[^>]+>", " ", str((meta or {}).get("heading") or ""))
+    m = re.search(r"(Mid|Final)\s*-?\s*Term", h, re.I) or re.search(r"(Mid|Final)", str((meta or {}).get("exam_label") or ""), re.I)
+    t = re.search(r"(Spring|Summer|Fall|Autumn)\s*,?\s*(\d{4})", h, re.I)
+    kind = (m.group(1).title() + " Term") if m else "Examination"
+    term = f" {t.group(1).title()} {t.group(2)}" if t else ""
+    base = f"Duty Roster of {kind}{term}"
+    if subtitle and not re.search(r"roster", subtitle, re.I):
+        base += f" — {re.sub(r'^Invigilation\s*[—-]\s*', '', subtitle)}"
+    return base
+
+
+def roster_blocks(sessions_layout, roster):
+    """[{label, rooms:[{room, lines:[str], strength, invs:[names]}]}] — one per sitting."""
+    out = []
+    for si, sess in enumerate(sessions_layout):
+        rows_of = {r["name"]: (r.get("rows") or []) for r in (sess.get("rooms") or [])}
+        rooms = []
+        for room_name, n_students, _papers, invs in (roster[si] if si < len(roster) else []):
+            cnt = OrderedDict()
+            for r in rows_of.get(room_name, []):
+                k = (str(r.get("course", "")).upper(), str(r.get("section") or ""))
+                cnt[k] = cnt.get(k, 0) + 1
+            lines = [f"{c}: {sec}[{n}]" for (c, sec), n in sorted(cnt.items(), key=lambda x: (x[0][0], x[0][1]))] or ["—"]
+            rooms.append({"room": room_name, "lines": lines, "strength": n_students, "invs": list(invs or [])})
+        if rooms:
+            out.append({"label": roster_session_label(sess), "rooms": rooms})
+    return out
+
+
+def _inv_cells(invs):
+    """three invigilator columns as in the Exam Office roster (a 4th name shares column 3)."""
+    c = list(invs or [])
+    return [c[0] if len(c) > 0 else "", c[1] if len(c) > 1 else "", "\n".join(c[2:])]
+
+
+def render_roster_pdf(blocks, title, out_path):
+    from reportlab.lib.pagesizes import landscape as _land
+    PAGE = _land(A4)
+    doc = SimpleDocTemplate(out_path, pagesize=PAGE, leftMargin=1.2 * cm, rightMargin=1.2 * cm,
+                            topMargin=1.0 * cm, bottomMargin=1.0 * cm, title=title)
+    W = PAGE[0] - 2.4 * cm
+    base = ParagraphStyle("rb", fontName="Helvetica", fontSize=9, leading=11, alignment=TA_CENTER)
+    bold = ParagraphStyle("rbb", parent=base, fontName="Helvetica-Bold")
+    code = ParagraphStyle("rbc", parent=bold)
+    ttl = ParagraphStyle("rt", parent=base, fontSize=20, leading=24)
+    # column widths in the reference workbook: B 9.1 · C 30 · D 12.3 · E 27.3 · G 24.1 · I 19.4
+    ratio = [12.0, 30.0, 11.0, 27.3, 24.1, 21.0]
+    cw = [W * r / sum(ratio) for r in ratio]
+    story = []
+    t = Table([[Paragraph(title, ttl)]], colWidths=[W], rowHeights=[1.3 * cm])
+    t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 1.2, colors.black), ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    story += [t, Spacer(1, 0.45 * cm)]
+    for b in blocks:
+        data = [[Paragraph(b["label"], bold), "", "", "", "", ""],
+                [Paragraph(h, bold) for h in ["Room No", "Course Code", "Strength", "Invigilator 1", "Invigilator 2", "Invigilator 3"]]]
+        st = [("SPAN", (0, 0), (-1, 0)), ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+              ("BOX", (0, 0), (-1, -1), 1.2, colors.black), ("BOX", (0, 0), (-1, 1), 1.2, colors.black),
+              ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 1.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5)]
+        r0 = 2
+        for rm in b["rooms"]:
+            n = len(rm["lines"])
+            inv = _inv_cells(rm["invs"])
+            for i, line in enumerate(rm["lines"]):
+                data.append([Paragraph(rm["room"], base) if i == 0 else "", Paragraph(f"<u>{line}</u>", code),
+                             Paragraph(str(rm["strength"]), base) if i == 0 else "",
+                             *([Paragraph(x.replace("\n", "<br/>"), base) for x in inv] if i == 0 else ["", "", ""])])
+            if n > 1:
+                for c in (0, 2, 3, 4, 5):
+                    st.append(("SPAN", (c, r0), (c, r0 + n - 1)))
+            st.append(("LINEABOVE", (0, r0), (-1, r0), 1.2, colors.black))
+            r0 += n
+        tb = Table(data, colWidths=cw, repeatRows=2)
+        tb.setStyle(TableStyle(st))
+        story += [tb, Spacer(1, 0.7 * cm)]
+    if not blocks:
+        story.append(Paragraph("No sittings to invigilate.", base))
+    doc.build(story)
+
+
+def render_roster_xlsx(blocks, title, out_path, by_teacher=None):
+    """The Exam Office's duty-roster workbook, cell for cell: columns B..J
+    (Room No, Course Code, Strength, Invigilator 1, Signature, Invigilator 2,
+    Signature, Invigilator 3, Signature — signature columns hidden), merged room /
+    strength / invigilator cells, Calibri 11, thin grid, medium frame per sitting."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, Border, Side
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    thin, med = Side(style="thin"), Side(style="medium")
+    F = lambda **k: Font(name="Calibri", size=k.pop("size", 11), **k)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for col, w in zip("BCDEFGHIJ", [13.0, 30.0, 12.28515625, 27.28515625, 26.28515625, 24.140625, 26.0, 19.42578125, 21.0]):
+        ws.column_dimensions[col].width = w
+    for col in "FHJ":
+        ws.column_dimensions[col].hidden = True
+    COLS = list("BCDEFGHIJ")
+
+    def box(r1, r2, c1="B", c2="J"):
+        """thin grid inside, medium outline around rows r1..r2, columns c1..c2"""
+        ci = [COLS.index(c1), COLS.index(c2)]
+        for r in range(r1, r2 + 1):
+            for k in range(ci[0], ci[1] + 1):
+                cell = ws[f"{COLS[k]}{r}"]
+                cell.border = Border(left=med if k == ci[0] else thin, right=med if k == ci[1] else thin,
+                                     top=med if r == r1 else thin, bottom=med if r == r2 else thin)
+
+    ws.merge_cells("B2:I3")
+    ws["B2"] = title
+    ws["B2"].font = F(size=22)
+    ws["B2"].alignment = center
+    for r in (2, 3):
+        for c in "BCDEFGHI":
+            ws[f"{c}{r}"].border = Border(left=med if c == "B" else None, right=med if c == "I" else None,
+                                          top=med if r == 2 else None, bottom=med if r == 3 else None)
+    r = 6
+    for b in blocks:
+        top = r
+        ws.merge_cells(f"B{r}:I{r}")
+        ws[f"B{r}"] = b["label"]
+        ws[f"B{r}"].font = F(bold=True)
+        ws[f"B{r}"].alignment = center
+        ws.row_dimensions[r].height = 15.75
+        r += 1
+        for c, h in zip(COLS, ["Room No", "Course Code", "Strength", "Invigilator 1", "Signature", "Invigilator 2", "Signature", "Invigilator 3", "Signature"]):
+            ws[f"{c}{r}"] = h
+            ws[f"{c}{r}"].font = F(bold=True)
+            ws[f"{c}{r}"].alignment = center
+        ws.row_dimensions[r].height = 15.75
+        r += 1
+        box(top, r - 1)
+        for rm in b["rooms"]:
+            n = len(rm["lines"])
+            r1, r2 = r, r + n - 1
+            inv = _inv_cells(rm["invs"])
+            ws[f"B{r1}"] = rm["room"]
+            ws[f"D{r1}"] = rm["strength"]
+            ws[f"E{r1}"], ws[f"G{r1}"], ws[f"I{r1}"] = inv
+            for i, line in enumerate(rm["lines"]):
+                ws[f"C{r + i}"] = line
+                ws[f"C{r + i}"].font = F(bold=True, underline="single")
+            for c in COLS:
+                for rr in range(r1, r2 + 1):
+                    if c != "C":
+                        ws[f"{c}{rr}"].font = F()
+                    ws[f"{c}{rr}"].alignment = center
+            if n > 1:
+                for c in "BDEFGHIJ":
+                    ws.merge_cells(f"{c}{r1}:{c}{r2}")
+            if len(rm["invs"]) > 3:
+                ws.row_dimensions[r1].height = max(15.0 * len(rm["invs"][2:]), 15.0) if n == 1 else None
+            box(r1, r2)
+            r = r2 + 1
+        box(top, r - 1)   # medium frame around the whole sitting
+        r += 3            # blank rows between sittings (as in the reference)
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_margins.left = 0.7
+    ws.page_margins.right = 0.7
+    ws.page_margins.top = 0.9
+    ws.print_area = f"B2:I{max(r - 3, 3)}"
+    if by_teacher:
+        ts = wb.create_sheet("By teacher")
+        head = ["Teacher", "Faculty ID", "Designation", "Duties", "Exam days", "Duty list (date · time · room)"]
+        ts.append(head)
+        for c in ts[1]:
+            c.font = F(bold=True)
+        for row in by_teacher:
+            ts.append(row)
+        for col, w in zip("ABCDEF", [32, 11, 26, 8, 10, 110]):
+            ts.column_dimensions[col].width = w
+    wb.save(out_path)
+
+
+def roster_xlsx(config: dict) -> dict:
+    """mode 'roster_xlsx': the duty-roster workbook of an issued batch (from its
+    _layout.json; optional `code` = only rooms writing that paper)."""
+    with open(config["layout_json"], "r", encoding="utf-8") as f:
+        L = json.load(f)
+    code = str(config.get("code") or "").upper()
+    sessions, roster = [], []
+    for s in L.get("sessions") or []:
+        rooms = []
+        for rm in s.get("rooms") or []:
+            rows = rm.get("rows") or []
+            if code and not any(str(x.get("course", "")).upper() == code for x in rows):
+                continue
+            rooms.append(rm)
+        if rooms:
+            sessions.append({**{k: v for k, v in s.items() if k != "rooms"}, "rooms": rooms})
+            roster.append([(rm["name"], len(rm.get("rows") or []), 0, list(rm.get("invigilators") or [])) for rm in rooms])
+    meta = dict(config.get("meta") or {})
+    meta.update({k: v for k, v in (L.get("meta") or {}).items() if v})
+    title = roster_title(meta, f"{code}" if code else None)
+    blocks = roster_blocks(sessions, roster)
+    render_roster_xlsx(blocks, title, config["out_xlsx"], by_teacher=config.get("by_teacher"))
+    if config.get("out_pdf"):
+        render_roster_pdf(blocks, title, config["out_pdf"])
+    return {"status": "ok", "sittings": len(blocks), "rooms": sum(len(b["rooms"]) for b in blocks), "file": config["out_xlsx"]}
+
+
 def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_session=None,
                         max_per_day=2, exclude_day_load=None, course_teachers=None,
                         roster_out=None, roster_fixed=None, subtitle=None):
-    S = _styles()
-    logo = _find_logo()
-    doc = SimpleDocTemplate(
-        out_path, pagesize=A4,
-        leftMargin=1.1 * cm, rightMargin=1.1 * cm, topMargin=1.0 * cm, bottomMargin=1.2 * cm,
-        title="Abasyn University — Invigilation Duty Roster",
-    )
-    content_w = A4[0] - 2.2 * cm
-    P = Paragraph
-    story = []
-    gen_date = datetime.now().strftime("%a, %d %b %Y")
-
-    logo_cell = ""
-    if logo:
-        try:
-            logo_cell = RLImage(logo_reader(logo), width=2.2 * cm, height=2.2 * cm, kind="proportional")
-        except Exception:
-            logo_cell = ""
-    header = Table([[P(meta["campus_line"] + "<br/>" + _sub_heading(meta) +
-                       f"<br/><font size=9 color='#5c6b63'>{subtitle or 'Invigilation Duty Roster'}</font>",
-                       S["campus"]), logo_cell]],
-                   colWidths=[content_w - 2.6 * cm, 2.6 * cm])
-    header.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                                ("ALIGN", (1, 0), (1, 0), "RIGHT")]))
-    story.append(header)
-    story.append(Spacer(1, 0.3 * cm))
-
     # roster_fixed = the duties ALREADY assigned in a batch (course pack re-print) —
     # never re-assign, just print them.
     roster = roster_fixed if roster_fixed is not None else assign_invigilators(
@@ -1696,61 +1902,8 @@ def render_invigilation(sessions_layout, meta, pool, out_path, exclude_by_sessio
         course_teachers=course_teachers)
     if roster_out is not None:
         roster_out.extend(roster)
-    for si, sess in enumerate(sessions_layout):
-        band = Table([[P(f"{sess['day']}, {sess['date']}  —  {sess['slot']}", S["exam"])]],
-                     colWidths=[content_w])
-        band.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _MINT),
-                                   ("BOX", (0, 0), (-1, -1), 0.5, _BORDER),
-                                   ("TOPPADDING", (0, 0), (-1, -1), 3),
-                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
-        story.append(band)
-        story.append(Spacer(1, 0.15 * cm))
-
-        head = ["Room", "Students", "Papers", "Invigilator(s)", "Signature"]
-        data = [[P(h, S["th"]) for h in head]]
-        for room_name, n_students, papers, invs in roster[si]:
-            names_html = "<br/>".join(f"{i+1}. {n}" for i, n in enumerate(invs)) or "—"
-            data.append([
-                P(f"<b>{room_name}</b>", S["tdb"]),
-                P(str(n_students), S["tdc"]),
-                P(str(papers), S["tdc"]),
-                P(names_html, S["td"]),
-                P("", S["td"]),
-            ])
-        col_w = [2.6 * cm, 1.8 * cm, 1.6 * cm, None, 4.6 * cm]
-        fixed = sum(w for w in col_w if w)
-        col_w = [(content_w - fixed) if w is None else w for w in col_w]
-        tbl = Table(data, colWidths=col_w, repeatRows=1)
-        st = [
-            ("BACKGROUND", (0, 0), (-1, 0), _HEAD_GREEN),
-            ("GRID", (0, 0), (-1, -1), 0.4, _BORDER),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 1), (-1, -1), 6), ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
-        ]
-        for i in range(1, len(data)):
-            if i % 2 == 0:
-                st.append(("BACKGROUND", (0, i), (-1, i), _ROW_ALT))
-        tbl.setStyle(TableStyle(st))
-        story.append(tbl)
-        story.append(Spacer(1, 0.5 * cm))
-
-        sig = Table([[
-            P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
-              "<b>Examination Officer</b>", ParagraphStyle("sc", parent=S["value"], alignment=TA_CENTER)),
-            P("<font size=8 color='#5c6b63'>______________________________</font><br/>"
-              "<b>Controller of Examinations</b>", ParagraphStyle("sc2", parent=S["value"], alignment=TA_CENTER)),
-        ]], colWidths=[content_w / 2, content_w / 2])
-        sig.setStyle(TableStyle([("ALIGN", (0, 0), (-1, -1), "CENTER"), ("TOPPADDING", (0, 0), (-1, -1), 6)]))
-        story.append(sig)
-        story.append(P(f"<font size=7 color='#8a958d'>Generated: {gen_date}</font>",
-                       ParagraphStyle("g", parent=S["foot"], alignment=TA_RIGHT)))
-
-        if si != len(sessions_layout) - 1:
-            story.append(PageBreak())
-
-    if not sessions_layout:
-        story.append(P("No sessions to invigilate.", S["value"]))
-    doc.build(story)
+    blocks = roster_blocks(sessions_layout, roster)
+    render_roster_pdf(blocks, roster_title(meta, subtitle), out_path)
 
     # Return the roster keyed by session AND per-teacher-per-day duty counts so the
     # caller can (a) store them and (b) feed them to another cohort's roster as
@@ -2621,7 +2774,7 @@ def main():
     try:
         mode = cfg.get("mode")
         result = (course_pack(cfg) if mode == "course_pack" else rerender_docs(cfg) if mode == "rerender_docs"
-                  else resection(cfg) if mode == "resection" else run(cfg))
+                  else resection(cfg) if mode == "resection" else roster_xlsx(cfg) if mode == "roster_xlsx" else run(cfg))
     except Exception as e:
         print(json.dumps({"status": "failed", "error": str(e)}))
         sys.exit(1)

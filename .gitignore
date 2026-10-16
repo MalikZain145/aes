@@ -37,3 +37,6 @@ backend/data/
 # scheduler output subdirs + emails (junk/test — never commit)
 scheduler/output/*/
 scheduler/output/*.eml
+
+# scratch outputs (not part of the app)
+Claude outputs/

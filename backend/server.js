@@ -43,6 +43,7 @@ app.use('/api/rooms-labs', require('./routes/roomsLabs'));
 app.use('/api/generate', require('./routes/generate'));
 app.use('/api/exam-pipeline', require('./routes/examPipeline'));   // one-click end-to-end exam engine
 app.use('/api/search', require('./routes/search'));
+app.use('/api/assistant', require('./routes/assistant'));   // Ask Abasyn (voice) — exam data
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/dataset', require('./routes/dataset'));
 app.use('/api/schedule', require('./routes/schedule'));

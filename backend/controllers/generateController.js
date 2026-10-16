@@ -1381,6 +1381,8 @@ exports.generateAdmitCards = async (req, res) => {
         seatingReport: result.seating_report,
         verifyFile: verifyName, baseUrl,
         audit: result.audit || null,
+        // sections were applied while seating (A → B → C) — the dashboard strip shows it
+        ...(config.course_sections && Object.keys(config.course_sections).length ? { sectionsAppliedAt: new Date().toISOString() } : {}),
       },
       status: 'ready',
     });

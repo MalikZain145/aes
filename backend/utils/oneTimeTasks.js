@@ -325,6 +325,47 @@ async function mergePapers20261016() {
   return `BS datesheet: MG403+MG404 → 03-Nov 11:00-12:30, MG116+MG202 → ${dates[m116.d]} ${slots[m116.s]}; 9841 → MG403-B | ${cards}`;
 }
 
+// The 16 Oct batch was seated WITH sections (A → B → C) — mark it so the dashboard
+// strip stops saying "not applied" (no re-print).
+async function markSections20261016() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-16.merge-papers' }).lean())) throw new Error('waiting for the merged admit cards');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards' }).sort({ createdAt: -1 });
+  if (!b) return 'no admit-card batch';
+  if (b.meta && b.meta.sectionsAppliedAt) return 'already marked';
+  b.meta = { ...(b.meta || {}), sectionsAppliedAt: new Date(b.createdAt || Date.now()).toISOString() };
+  b.markModified('meta'); await b.save();
+  return `${b.title}: sections marked as applied`;
+}
+
+// New exam-hall instructions on every admit card (ID card / CNIC; no phones, smartwatches,
+// calculators, bags) and the Finance "no signature or stamp" line removed. The issued
+// batch is re-printed from its own seating — same rooms, seats, sections, QR codes.
+async function cardInstructions20261016() {
+  return 'done together with 2026-10-16.roster-format (one re-print)';
+}
+
+// One re-print of the issued batch: new admit-card instructions AND the invigilation
+// roster in the Exam Office duty-roster format (Room No · Course Code · Strength ·
+// Invigilator 1-3, one line per paper). Same rooms, seats, sections, duties, QR codes.
+async function rosterFormat20261016() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-16.merge-papers' }).lean())) throw new Error('waiting for the merged admit cards');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards' }).sort({ createdAt: -1 }).lean();
+  if (!b) return 'no admit-card batch';
+  const r = await require('./sections').resectionBatch(b._id);
+  return `${b.title}: ${r.cards || 0} admit cards re-printed with the new instructions + duty roster in the Exam Office format (${r.moved || 0} seats changed)`;
+}
+
+// instructions moved right under the course table (bigger font) — re-print the latest batch once
+async function instructionsUnderTable20261016() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards' }).sort({ createdAt: -1 }).lean();
+  if (!b) return 'no admit-card batch';
+  const r = await require('./sections').resectionBatch(b._id);
+  return `${b.title}: ${r.cards || 0} admit cards re-printed (instructions under the course table)`;
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -343,6 +384,10 @@ const TASKS = [
   ['2026-10-15.paper-teachers', paperTeachers20261015],
   ['2026-10-16.mg403-sections', mg403Sections20261016],
   ['2026-10-16.merge-papers', mergePapers20261016],
+  ['2026-10-16.mark-sections', markSections20261016],
+  ['2026-10-16.card-instructions', cardInstructions20261016],
+  ['2026-10-16.roster-format', rosterFormat20261016],
+  ['2026-10-16.instructions-under-table', instructionsUnderTable20261016],
 ];
 
 async function runOneTimeTasks() {
