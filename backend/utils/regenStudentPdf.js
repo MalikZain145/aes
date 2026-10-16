@@ -55,6 +55,7 @@ async function buildSessionsLayout(cellSet, filter = {}) {
         row: Number(rowNum(e.seat)) || 0, col: isRight(e.seat) ? 'R' : 'L', seat: e.seat,
         sid: a.studentId, name: a.name || '', program: a.program || '', batch: a.batch || '',
         course: String(e.code || '').toUpperCase(),
+        ...(e.section ? { section: e.section } : {}),
       });
     }
   }
@@ -113,7 +114,7 @@ async function regenForStudent({ reg, cells = [], baseUrl = '', campusLine = 'Ab
     .slice()
     .sort((a, b) => (a.date === b.date ? slotStart(a.slot) - slotStart(b.slot) : String(a.date).localeCompare(String(b.date))))
     .map((e, i) => ({
-      sr: i + 1, code: e.code, title: e.name || e.code, teacher: e.teacher || '',
+      sr: i + 1, code: e.code, title: (e.name || e.code) + (e.section ? ` — Section ${e.section}` : ''), teacher: e.teacher || '',
       date: e.dateDisp || disp(e.date), day: (e.day || dayName(e.date)).slice(0, 3),
       time: e.slot, room: e.room, seat: e.seat,
     }));

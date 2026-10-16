@@ -47,7 +47,7 @@ const {
 // student's course list — only the exam schedule skips them), and the old importer's
 // false positive ("Software Project Management" etc. flagged as no-exam) is restored.
 async function dbNoExamCodes() {
-  try { return (await Course.distinct('code', { noExam: true })).map((x) => String(x).toUpperCase()); } catch { return []; }
+  try { return (await Course.distinct('code', { noExam: true, active: { $ne: false } })).map((x) => String(x).toUpperCase()); } catch { return []; }
 }
 
 function cleanup(p) {
@@ -1312,6 +1312,12 @@ exports.generateAdmitCards = async (req, res) => {
       }
     } catch (e) { console.warn('invigilator pool:', e.message); }
 
+    // Sections: a course listed with several sections (A/B/C) keeps them apart on
+    // the ID sheets, seating plan, cards and tags (A seated first, then B, then C).
+    try { config.course_sections = await require('../utils/sections').courseSections(); } catch (e) { console.warn('sections:', e.message); }
+    // …and each student sits with the section of his program batch (ERP class list)
+    try { config.student_sections = await require('../utils/sectionPlan').studentSectionMap(); } catch (e) { console.warn('student sections:', e.message); }
+
     configPath = path.join(OUTPUT_DIR, `acconfig_${stamp}.json`);
     fs.writeFileSync(configPath, JSON.stringify(config));
 
@@ -1396,7 +1402,7 @@ exports.generateAdmitCards = async (req, res) => {
           exams: (s.exams || []).map((e) => ({
             code: e.code, name: e.name, teacher: e.teacher,
             date: e.date, dateDisp: e.date_disp, day: e.day, slot: e.slot,
-            start: e.start, finish: e.finish, room: e.room, seat: e.seat,
+            start: e.start, finish: e.finish, room: e.room, seat: e.seat, section: e.section || '',
             // Per-(student, paper) 64-bit key — derived from the signed token +
             // this paper. One-way; stored only server-side, never exposed.
             key: admitCrypto.paperKey(s.token, e.code, e.date, e.slot),
@@ -1542,7 +1548,7 @@ exports.generateTags = async (req, res) => {
     if (!batch) batch = await GeneratedFile.findOne({ kind: 'admit_cards' }).sort({ createdAt: -1 }).lean();
     if (!batch) return res.status(404).json({ error: 'No admit cards found. Generate admit cards first, then print tags.' });
 
-    const avs = await AdmitVerification.find({ batchId: batch._id }).select('examType exams program').lean();
+    const avs = await AdmitVerification.find({ batchId: batch._id }).select('studentId batch examType exams program').lean();
     if (!avs.length) return res.status(404).json({ error: 'No exam records for this admit-card batch. Re-generate the admit cards.' });
 
     // course code → its section(s), to show a section on the tag when meaningful
@@ -1563,14 +1569,23 @@ exports.generateTags = async (req, res) => {
       return out.join(' / ');
     };
     const secByCode = {};
+    const teacherBySec = {};     // 'CODE|A' → that section's teacher (DB)
     const teachersByCode = {};   // code → [teacher, enrolled] of EVERY section (DB)
     try {
-      const courses = await Course.find({ active: true }).select('code section teacher enrolled').lean();
+      const all = await Course.find({ active: true }).select('code section teacher enrolled component erpEnrolled').lean();
+      // the paper belongs to the LECTURE: lab rows (ERP class list has both) never put the
+      // lab instructor or a lab-only section on the envelope — unless a course has no lecture
+      const hasLec = new Set(all.filter((c) => c.component !== 'Lab').map((c) => String(c.code || '').toUpperCase()));
+      let courses = all.filter((c) => (c.component === 'Lab' ? !hasLec.has(String(c.code || '').toUpperCase()) : true));
+      // a section the class list shows with nobody in it is not a section of the paper
+      const hasPeople = new Set(courses.filter((c) => c.erpEnrolled == null || c.erpEnrolled > 0).map((c) => String(c.code || '').toUpperCase()));
+      courses = courses.filter((c) => c.erpEnrolled == null || c.erpEnrolled > 0 || !hasPeople.has(String(c.code || '').toUpperCase()));
       for (const c of courses) {
         const cd = String(c.code || '').toUpperCase(); if (!cd) continue;
         (secByCode[cd] = secByCode[cd] || new Set()).add(String(c.section || '').toUpperCase());
         const tn = cleanT(c.teacher);
         if (tn) (teachersByCode[cd] = teachersByCode[cd] || []).push([tn, Number(c.enrolled) || 0]);
+        if (tn && c.section) teacherBySec[`${cd}|${String(c.section).toUpperCase()}`] = tn;
       }
     } catch { /* ignore */ }
     // Envelope teacher = every section teacher of the course from the DB (most-enrolled
@@ -1586,14 +1601,44 @@ exports.generateTags = async (req, res) => {
       return vals.length === 1 ? vals[0] : (vals.length ? vals.join('/') : '');
     };
 
-    // group by (code | room | date | slot) → one envelope per paper-room-session
+    // Students of a multi-section course whose card has no section yet (batch made
+    // before sections were kept apart and not re-printed yet) get the SAME section
+    // the re-print will give them — so a tag never says "A/B".
+    let secFallback = new Map();
+    let secPlan = {};
+    try { secPlan = await require('../utils/sectionPlan').studentSectionMap(); } catch (e) { console.warn('tags section plan:', e.message); }
+    try {
+      const S = require('../utils/sections');
+      const cs = await S.courseSections();
+      const need = new Set();
+      for (const av of avs) for (const e of av.exams || []) { const c = String(e.code || '').toUpperCase(); if (cs[c] && !e.section && e.room && e.seat) need.add(c); }
+      if (need.size) {
+        const byCode = new Map(); const batchOf = new Map();
+        for (const av of avs) {
+          batchOf.set(String(av.studentId), av.batch || av.program || '');
+          for (const e of av.exams || []) {
+            const c = String(e.code || '').toUpperCase();
+            if (!need.has(c) || !e.room || !e.seat) continue;
+            if (!byCode.has(c)) byCode.set(c, []);
+            byCode.get(c).push(String(av.studentId));
+          }
+        }
+        secFallback = S.assignSections(byCode, Object.fromEntries([...need].map((c) => [c, cs[c]])), batchOf);
+      }
+    } catch (e) { console.warn('tags sections:', e.message); }
+
+    // group by (code | SECTION | room | date | slot) → one envelope per section per
+    // paper-room-session: sections of a course are never merged on a tag
     const map = new Map();
     for (const av of avs) {
       for (const e of (av.exams || [])) {
-        const key = `${e.code}|${e.room}|${e.date}|${e.slot}`;
+        const sk = `${av.studentId}|${String(e.code || '').toUpperCase()}`;
+        const sec = String(e.section || secPlan[sk] || secFallback.get(sk) || '').toUpperCase();
+        const key = `${e.code}|${sec}|${e.room}|${e.date}|${e.slot}`;
         let t = map.get(key);
         if (!t) {
-          t = { code: e.code, name: e.name, teacher: teacherOf(e.code, e.teacher), room: e.room || '',
+          const secTeacher = sec ? teacherBySec[`${String(e.code).toUpperCase()}|${sec}`] : '';
+          t = { code: e.code, name: e.name, section: sec, teacher: secTeacher || teacherOf(e.code, e.teacher), room: e.room || '',
             dateDisp: e.dateDisp || e.date || '', day: e.day || '', start: e.start || '',
             finish: e.finish || '', slot: e.slot || '', examType: av.examType || batch.examType || '', count: 0 };
           map.set(key, t);
@@ -1612,6 +1657,7 @@ exports.generateTags = async (req, res) => {
     const tags = [...map.values()].sort((a, b) =>
       tkey(a).localeCompare(tkey(b))
       || String(a.code).localeCompare(String(b.code))
+      || String(a.section || '').localeCompare(String(b.section || ''))
       || String(a.dateDisp).localeCompare(String(b.dateDisp))
       || String(a.slot).localeCompare(String(b.slot))
       || String(a.room).localeCompare(String(b.room)));
@@ -1679,7 +1725,7 @@ exports.generateTags = async (req, res) => {
       while (shown.length > 4 && font.widthOfTextAtSize(shown, cs) > cw) shown = shown.slice(0, -2);
       if (shown !== courseTxt) shown = shown.slice(0, -1) + '…';
       page.drawText(shown, { x: cols[0] + 4, y: dy - 14, size: cs, font, color: dark });
-      page.drawText(sectionOf(t.code) || '—', { x: cols[1] + 4, y: dy - 14, size: 8.5, font, color: dark });
+      page.drawText(t.section || sectionOf(t.code) || '—', { x: cols[1] + 4, y: dy - 14, size: 8.5, font, color: dark });
       page.drawText(String(t.count), { x: cols[2] + 30, y: dy - 14, size: 9, font: bold, color: dark });
       page.drawText(examLabel(t), { x: cols[3] + 5, y: dy - 14, size: 8, font, color: dark });
       slotIdx += 1;

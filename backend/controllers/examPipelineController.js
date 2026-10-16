@@ -248,7 +248,7 @@ async function runJob(job, opts) {
     const ex = await exportDatabaseToJson();
     exportPath = ex.exportPath;
     let noExam = [];
-    try { noExam = await Course.distinct('code', { noExam: true }); } catch { /* ignore */ }
+    try { noExam = await Course.distinct('code', { noExam: true, active: { $ne: false } }); } catch { /* ignore */ }
 
     // 3) pipeline
     job.stage = 'pipeline';

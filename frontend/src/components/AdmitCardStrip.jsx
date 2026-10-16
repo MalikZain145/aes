@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Contact, LayoutGrid, ClipboardList, UserCheck, Download, Clock, Tag, Loader2, Printer,
-  Search, X, Eye, BookOpen, Users, DoorOpen, CalendarDays, FileSpreadsheet,
+  Search, X, Eye, BookOpen, Users, DoorOpen, CalendarDays, FileSpreadsheet, Layers, CheckCircle2,
 } from 'lucide-react';
 import api from '../api/client';
 import { downloadFile } from '../api/download';
@@ -81,6 +81,10 @@ export default function AdmitCardStrip() {
 
   const rec = batches[0];
   const files = useMemo(() => (rec?.files || []), [rec]);
+  const [secBusy, setSecBusy] = useState(false);
+  const [secMsg, setSecMsg] = useState('');
+  const [sectionsAt, setSectionsAt] = useState(null);
+  useEffect(() => { setSectionsAt(rec?.meta?.sectionsAppliedAt || null); }, [rec]);
   if (!rec) return null;   // nothing generated yet → hide the strip
 
   const pick = async (code) => {
@@ -131,6 +135,17 @@ export default function AdmitCardStrip() {
   };
 
   // Question-Paper-Envelope tags PDF (all papers) — open for printing / saving.
+  const applySections = async () => {
+    setSecBusy(true); setSecMsg('');
+    try {
+      const res = await api.post(`/generate/admit-cards/${rec._id}/sections`, {}, { timeout: 0 });
+      setSectionsAt(new Date().toISOString());
+      setSecMsg(`${res.data.courses} multi-section courses · ${res.data.moved} seats re-ordered · download the PDFs again.`);
+    } catch (e) {
+      setSecMsg(e?.response?.data?.error || 'Could not apply sections.');
+    } finally { setSecBusy(false); }
+  };
+
   const tags = async (print) => {
     setBusy(true);
     try {
@@ -274,6 +289,18 @@ export default function AdmitCardStrip() {
         <button className="btn btn-ghost btn-sm" onClick={() => tags(false)} disabled={busy}>
           <Download size={14} /> Save Tags PDF
         </button>
+      </div>
+      {/* Sections kept apart: A seated first, then B, then C — re-print the issued batch */}
+      <div className="acs-tags">
+        <span><Layers size={14} /> Sections (A → B → C):</span>
+        {sectionsAt
+          ? <span className="acs-sec-ok"><CheckCircle2 size={13} /> applied {fmt(sectionsAt)}</span>
+          : <span className="acs-sec-warn">not applied to these PDFs yet</span>}
+        <button className="btn btn-ghost btn-sm" onClick={applySections} disabled={secBusy || busy}
+          title="Re-order each multi-section course A → B → C and re-print the admit cards, seating plan, ID sheets and invigilation (takes a few minutes)">
+          {secBusy ? <><Loader2 size={14} className="spin" /> Re-printing… (few minutes)</> : <><Layers size={14} /> {sectionsAt ? 'Re-apply sections' : 'Apply sections now'}</>}
+        </button>
+        {secMsg && <span className="acs-sec-msg">{secMsg}</span>}
       </div>
     </div>
   );

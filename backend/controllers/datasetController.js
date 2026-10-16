@@ -73,10 +73,12 @@ exports.uploadDataset = async (req, res) => {
         fullCode: r.fullCode, code: r.code, name: r.name, component: r.component,
         section: r.section, programBatch: r.programBatch, program: r.program,
         academicTerm: r.academicTerm, teacher: r.teacher, enrolled: r.enrolled,
-        creditHours: r.creditHours,
+        creditHours: r.creditHours != null ? r.creditHours : 3,
         ...(r.department ? { department: r.department } : {}),
         ...(r.level ? { level: r.level } : {}),
         noExam: !!r.noExam, noTimetable: !!r.noTimetable,
+        // ERP class list: the section's program batches + its ERP size (seating by section)
+        ...(Array.isArray(r.programBatches) ? { programBatches: r.programBatches, erpEnrolled: Number(r.enrolled) || 0 } : {}),
       });
       cCreated++;
     }

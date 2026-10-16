@@ -307,6 +307,14 @@ def _clean_teacher(t: str) -> str:
     return s
 
 
+_SEC_TEACHER = {}   # (CODE, 'A') -> that section's lecture teacher (filled by build_teacher_map)
+
+
+def section_teacher(code, sec, default=""):
+    """The teacher of one section of a multi-section course (falls back to `default`)."""
+    return _SEC_TEACHER.get((str(code).upper(), str(sec or "").upper()), "") or default if sec else default
+
+
 def build_teacher_map(config: dict) -> dict:
     """
     Build {course_code: 'Teacher Name'} from the richest source available:
@@ -316,18 +324,35 @@ def build_teacher_map(config: dict) -> dict:
     non-TBA name wins; up to two distinct names are shown joined by ' / '.
     """
     votes = defaultdict(Counter)   # code -> Counter(teacher)
+    _SEC_TEACHER.clear()
 
     # ---- source 1: DB export JSON ----
+    # The paper's teacher is the LECTURE teacher: a course with lecture + lab rows
+    # (ERP class list) must not print the lab instructor on the card / tag. Lab rows
+    # count only for a course that has no lecture row at all.
     dj = config.get("data_json")
     if dj and Path(dj).exists():
         try:
             with open(dj, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            lec_votes, lab_votes = defaultdict(Counter), defaultdict(Counter)
+            sec_votes = defaultdict(Counter)   # (code, letter) -> Counter(teacher), lectures
             for c in (data.get("courses", []) if isinstance(data, dict) else []):
                 code = ds._extract_course_code(c.get("code") or c.get("fullCode") or "")
                 teacher = _clean_teacher(c.get("teacher"))
                 if code and teacher:
-                    votes[code][teacher] += max(1, int(c.get("enrolled") or 1))
+                    w = max(1, int(c.get("enrolled") or 1))
+                    if str(c.get("component") or "Lecture").lower() == "lab":
+                        lab_votes[code][teacher] += w
+                    else:
+                        lec_votes[code][teacher] += w
+                        L = str(c.get("section") or "").strip().upper()
+                        if re.fullmatch(r"[A-Z]", L):
+                            sec_votes[(code, L)][teacher] += w
+            for code in set(lec_votes) | set(lab_votes):
+                votes[code] = lec_votes[code] if lec_votes.get(code) else lab_votes[code]
+            for k, cnt in sec_votes.items():
+                _SEC_TEACHER[k] = cnt.most_common(1)[0][0]
         except Exception:
             pass
 
@@ -576,6 +601,158 @@ def _bench_ok(a, b):
     if a is None or b is None:
         return True
     return a["course"] != b["course"] and _batch_key(a) != _batch_key(b)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SECTIONS — a course the class-wise report lists with several sections (A, B, C)
+# keeps its sections apart on the ID sheets, seating plan, admit cards and paper
+# tags. The registration report has no per-student section, so students are split:
+# same batch (program + intake) together, sections filled evenly, reg-no order.
+# All sections still sit the SAME paper at the SAME time; in the hall section A is
+# seated first, then B, then C.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+def _sid_key(sid):
+    s = str(sid)
+    return (0, int(s), "") if s.isdigit() else (1, 0, s)
+
+
+def assign_sections(students_by_code, course_sections, batch_of):
+    """students_by_code: CODE -> iterable of sid; course_sections: CODE -> [letters];
+    batch_of: sid -> batch text. Returns {(sid, CODE): letter} for multi-section codes."""
+    out = {}
+    for code, letters in (course_sections or {}).items():
+        letters = sorted({str(x).strip().upper() for x in (letters or []) if str(x).strip()})
+        sids = sorted(set(students_by_code.get(str(code).upper(), [])), key=_sid_key)
+        if len(letters) < 2 or not sids:
+            continue
+        k, n = len(letters), len(sids)
+        cap = {L: n // k + (1 if i < n % k else 0) for i, L in enumerate(letters)}
+        groups = defaultdict(list)
+        for sid in sids:
+            groups[re.sub(r"\s+", " ", str(batch_of.get(sid, ""))).strip().lower()].append(sid)
+        order = sorted(groups.values(), key=lambda g: (-len(g), _sid_key(g[0])))
+        for g in order:
+            room = sorted(letters, key=lambda L: (-cap[L], L))
+            if cap[room[0]] >= len(g):
+                L = room[0]
+                for sid in g:
+                    out[(sid, str(code).upper())] = L
+                cap[L] -= len(g)
+                continue
+            for sid in g:                       # bigger than any section: spill over in order
+                L = next(x for x in letters if cap[x] > 0) if any(cap[x] > 0 for x in letters) else letters[-1]
+                out[(sid, str(code).upper())] = L
+                cap[L] -= 1
+    return out
+
+
+def sections_for(students_by_code, config, batch_of):
+    """The backend's batch-aware plan (config.student_sections: "sid|CODE" -> letter,
+    built from the ERP class list — a student sits with the section of his program
+    batch) wins; codes it does not cover fall back to the even split above."""
+    explicit = config.get("student_sections") or {}
+    cs = config.get("course_sections") or {}
+    out = {}
+    if explicit:
+        covered = set()
+        for key, L in explicit.items():
+            sid, _, code = str(key).rpartition("|")
+            code = code.upper()
+            if sid and code and sid in students_by_code.get(code, ()):
+                out[(sid, code)] = str(L).strip().upper()
+                covered.add(code)
+        cs = {c: v for c, v in cs.items() if str(c).upper() not in covered}
+    out.update(assign_sections(students_by_code, cs, batch_of))
+    return out
+
+
+def apply_section_seating(sessions_layout, sec_of):
+    """Inside every session, re-order the seats a multi-section course already holds
+    so section A fills them first, then B, then C (room order, then row, then side).
+    Only students of the SAME course swap seats — benches, rooms and every other
+    paper stay exactly where they are. Then any bench that ends up with two students
+    of one batch is fixed by swapping within the same course + section.
+    Adds row["section"]. Returns the number of students whose seat changed."""
+    moved = 0
+    multi = {c for (_sid, c) in sec_of}
+    for sess in sessions_layout:
+        rooms = sess.get("rooms") or []
+        for room in rooms:
+            for r in room["rows"]:
+                sec = sec_of.get((str(r.get("sid")), str(r.get("course", "")).upper()))
+                if sec:
+                    r["section"] = sec
+                else:
+                    r.pop("section", None)
+        by_code = defaultdict(list)            # CODE -> [(room_idx, row_dict)]
+        for ri, room in enumerate(rooms):
+            for r in room["rows"]:
+                c = str(r.get("course", "")).upper()
+                if c in multi:
+                    by_code[c].append((ri, r))
+        for code, items in by_code.items():
+            slots = sorted(((ri, _seat_key(r), r["row"], r["col"], r["seat"], r.get("time")) for ri, r in items),
+                           key=lambda x: (x[0], x[1]))
+            people = sorted((dict(r) for _ri, r in items),
+                            key=lambda r: (r.get("section") or "~", _sid_key(r["sid"])))
+            # write back: the i-th seat gets the i-th person
+            new_rows = defaultdict(list)
+            for (ri, _k, row, col, seat, _t), person in zip(slots, people):
+                old = next(x for x in items if x[1]["sid"] == person["sid"])
+                if old[0] != ri or old[1]["seat"] != seat:
+                    moved += 1
+                person.update(row=row, col=col, seat=seat)
+                new_rows[ri].append(person)
+            for ri in {x[0] for x in items}:
+                keep = [r for r in rooms[ri]["rows"] if str(r.get("course", "")).upper() != code]
+                rooms[ri]["rows"] = sorted(keep + new_rows.get(ri, []), key=_seat_key)
+        # same-batch bench repair (swap inside the same course + section)
+        for _round in range(3):
+            fixed_any = False
+            for room in rooms:
+                bench = defaultdict(list)
+                for r in room["rows"]:
+                    bench[r["row"]].append(r)
+                for rowno, pair in bench.items():
+                    if len(pair) != 2 or _batch_key(pair[0]) != _batch_key(pair[1]):
+                        continue
+                    for me in pair:
+                        if not me.get("section"):
+                            continue
+                        other = pair[1] if me is pair[0] else pair[0]
+                        done = False
+                        for room2 in rooms:
+                            b2 = defaultdict(list)
+                            for r in room2["rows"]:
+                                b2[r["row"]].append(r)
+                            for r in room2["rows"]:
+                                if r is me or r.get("course") != me.get("course") or r.get("section") != me.get("section"):
+                                    continue
+                                if _batch_key(r) == _batch_key(other):
+                                    continue
+                                p2 = [x for x in b2[r["row"]] if x is not r]
+                                if p2 and _batch_key(p2[0]) == _batch_key(me):
+                                    continue
+                                for k in ("row", "col", "seat"):
+                                    me[k], r[k] = r[k], me[k]
+                                if room2 is not room:
+                                    room["rows"].remove(me); room2["rows"].remove(r)
+                                    room["rows"].append(r); room2["rows"].append(me)
+                                    room["rows"].sort(key=_seat_key); room2["rows"].sort(key=_seat_key)
+                                moved += 1
+                                done = fixed_any = True
+                                break
+                            if done:
+                                break
+                        if done:
+                            break
+            if not fixed_any:
+                break
+    return moved
+
+
+def _course_label(code, section):
+    return f"{code}-{section}" if section else code
 
 
 def _separate_batches(layout):
@@ -1077,7 +1254,7 @@ def render_seating_plan(sessions_layout, meta, out_path):
                     P(r["sid"], S["tdc"]),
                     P(r["name"], S["td"]),
                     P(f"{r['program']}<br/><font size=6 color='#5c6b63'>{r['batch']}</font>", S["td"]),
-                    P(r["course"] + (f"<br/><font size=6 color='#5c6b63'>{r['time']}</font>"
+                    P(_course_label(r["course"], r.get("section")) + (f"<br/><font size=6 color='#5c6b63'>{r['time']}</font>"
                                      if r.get("time") and r.get("time") != sess["slot"] else ""),
                       S["tdb"]),
                 ])
@@ -1164,7 +1341,7 @@ def _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date, sess, roo
             P(r["name"], S["td"]),
             P(str(r["seat"]), S["tdb"]),
             P(r.get("time") or paper_time, S["tdc"]),
-            P("", S["tdc"]),      # Section — filled by student
+            P(r.get("section") or "", S["tdc"]),      # Section (multi-section courses); blank → student fills
             P("", S["tdc"]),      # Booklet Number — filled by student
             P("", S["tdc"]),      # Attendance — student signs
         ])
@@ -1234,14 +1411,15 @@ def render_identification_sheets(sessions_layout, meta, code_title, out_path):
         for room in sess["rooms"]:
             bycourse = defaultdict(list)
             for r in room["rows"]:
-                bycourse[r["course"]].append(r)
-            for code in sorted(bycourse):
-                rows = sorted(bycourse[code], key=_seat_key)
+                bycourse[(r["course"], r.get("section") or "")].append(r)
+            for (code, sec) in sorted(bycourse):
+                rows = sorted(bycourse[(code, sec)], key=_seat_key)
                 if not first:
                     story.append(PageBreak())
                 first = False
+                title = code_title.get(code, "") + (f" — Section {sec}" if sec else "")
                 story += _id_sheet_block(P, S, logo, content_w, meta, term_label, gen_date,
-                                         sess, room["name"], code, code_title.get(code, ""), rows)
+                                         sess, room["name"], _course_label(code, sec), title, rows)
     if first:
         story.append(P("No students to list.", S["value"]))
     doc.build(story)
@@ -1658,6 +1836,94 @@ def course_pack(config: dict) -> dict:
     }
 
 
+def resection(config: dict) -> dict:
+    """Apply the SECTION rule to an already-issued batch: inside each session the
+    seats a multi-section course holds are re-ordered A→B→C (same rooms, same
+    benches, only same-course students swap), then the admit cards, seating plan,
+    identification sheets and invigilation roster are re-printed. Invigilators are
+    NOT re-assigned. config: layout_json, students[] (AdmitVerification dump),
+    course_sections, meta, base_url, out_cards, out_seating, out_idsheets, out_invig, out_json."""
+    with open(config["layout_json"], "r", encoding="utf-8") as f:
+        L = json.load(f)
+    with open(config["students_json"], "r", encoding="utf-8") as f:
+        studs = json.load(f)
+    meta = {"campus_line": "Abasyn University Islamabad Campus", "heading": "", "exam_label": "Examination",
+            "program_level": "Undergraduate"}
+    meta.update({k: v for k, v in (config.get("meta") or {}).items() if v})
+    meta.update({k: v for k, v in (L.get("meta") or {}).items() if v})
+    by_code, batch_of = defaultdict(set), {}
+    for st in studs:
+        batch_of[str(st["sid"])] = st.get("batch") or st.get("program") or ""
+        for e in st.get("exams") or []:
+            if e.get("room") and e.get("seat"):
+                by_code[str(e["code"]).upper()].add(str(st["sid"]))
+    sec_of = sections_for(by_code, config, batch_of)
+    sessions = L.get("sessions") or []
+    moved = apply_section_seating(sessions, sec_of) if sec_of else 0
+    # new seat of every (sid, course, date)
+    pos = {}
+    for sess in sessions:
+        for room in sess.get("rooms") or []:
+            for r in room["rows"]:
+                pos[(str(r["sid"]), str(r["course"]).upper(), sess["date"])] = (room["name"], r["seat"], r.get("section", ""))
+    updates = {}
+    students_rows = []
+    srv = str(config.get("base_url") or "")
+    for pre in ("https://", "http://"):
+        if srv.startswith(pre):
+            srv = srv[len(pre):]
+    srv = srv.rstrip("/")
+    for st in sorted(studs, key=lambda x: (int(x.get("page") or 0) or 10**9)):
+        ex = []
+        for e in st.get("exams") or []:
+            k = (str(st["sid"]), str(e["code"]).upper(), e.get("date_disp") or "")
+            if k in pos:
+                e["room"], e["seat"], e["section"] = pos[k]
+            ex.append(e)
+        updates[str(st["sid"])] = [{"code": e["code"], "date": e.get("date"), "slot": e.get("slot"),
+                                    "room": e.get("room", ""), "seat": e.get("seat", ""), "section": e.get("section", "")} for e in ex]
+        if not int(st.get("page") or 0):
+            continue
+        seated = [e for e in ex if e.get("room") and e.get("seat") and e.get("room") != "UNASSIGNED"]
+        def _start(e):
+            m = re.match(r"\s*(\d{1,2}):(\d{2})", str(e.get("slot") or ""))
+            return ((int(m.group(1)) + (12 if int(m.group(1)) < 8 else 0)) * 60 + int(m.group(2))) if m else 0
+        seated.sort(key=lambda e: (e.get("date") or "", _start(e)))
+        rows = [{"sr": i, "code": e["code"], "title": (e.get("name") or e["code"]) + (f" — Section {e['section']}" if e.get("section") else ""),
+                 "teacher": e.get("teacher") or "", "date": e.get("date_disp") or "", "day": (e.get("day") or "")[:3],
+                 "time": e.get("slot") or "", "room": e["room"], "seat": e["seat"]} for i, e in enumerate(seated, start=1)]
+        tok = st.get("token") or ""
+        student = {"sid": st["sid"], "name": st.get("name", ""), "program": st.get("program", ""), "batch": st.get("batch", ""),
+                   "_qr_url": (f"Only a valid scanner can scan.  ABASYN-ADMIT:{tok}|{srv}" if srv else f"Only a valid scanner can scan.  ABASYN-ADMIT:{tok}") if tok else ""}
+        students_rows.append((student, rows))
+    out = {}
+    if config.get("out_cards"):
+        render_admit_cards(students_rows, meta, config["out_cards"])
+        out["cards"] = config["out_cards"]
+    if config.get("out_seating"):
+        render_seating_plan(sessions, meta, config["out_seating"])
+        out["seating"] = config["out_seating"]
+    if config.get("out_idsheets"):
+        render_identification_sheets(sessions, meta, L.get("code_title") or {}, config["out_idsheets"])
+        out["idsheets"] = config["out_idsheets"]
+    if config.get("out_invig"):
+        roster = [[(r["name"], len(r["rows"]), len({x.get("course") for x in r["rows"]}), r.get("invigilators") or [])
+                   for r in s.get("rooms") or []] for s in sessions]
+        render_invigilation(sessions, meta, [], config["out_invig"], roster_fixed=roster)
+        out["invig"] = config["out_invig"]
+    L["sessions"] = sessions
+    L["sections_applied"] = True
+    tmp = config["layout_json"] + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(L, f, ensure_ascii=False)
+    os.replace(tmp, config["layout_json"])
+    with open(config["out_json"], "w", encoding="utf-8") as f:
+        json.dump(updates, f)
+    counts = Counter((c, sec) for (_sid, c), sec in sec_of.items())
+    return {"status": "ok", "moved": moved, "labelled": len(sec_of), "courses": len({c for (_s, c) in sec_of}),
+            "cards": len(students_rows), "section_counts": {f"{c}-{s}": n for (c, s), n in sorted(counts.items())}, "files": out}
+
+
 def rerender_docs(config: dict) -> dict:
     """Re-print a batch's IDENTIFICATION SHEETS and INVIGILATION ROSTER from its
     _layout.json after a student's course was added / edited / deleted — nobody is
@@ -1924,6 +2190,7 @@ def run(config: dict) -> dict:
 
     seat_of = {}                              # (sid, cell) -> (room, seat)
     sessions_layout = []
+    _session_cells = []                       # per sessions_layout entry: its cells
     seating_report = {"solo_benches": 0, "overflow_benches": 0, "sessions": []}
     name_of = {st["sid"]: st["name"] for st in students}
     # Postgraduate (MS) cohort fills the smallest rooms first, so it lands in
@@ -2015,11 +2282,35 @@ def run(config: dict) -> dict:
             "day": DAY_NAMES[gdate.weekday()],
             "slot": slot_label, "rooms": rooms_layout,
         })
+        _session_cells.append(list(gcells))
         seating_report["sessions"].append({
             "date": gdate.strftime("%d-%b-%Y"), "slot": slot_label,
             "attending": stats["attending"], "benches_used": stats["seated"],
             "solo_benches": stats["solo_benches"], "overflow_benches": stats["overflow_benches"],
         })
+
+    # 6a) SECTIONS — multi-section courses keep their sections apart (A seated
+    # first, then B, then C); only same-course students swap seats.
+    sec_of = {}
+    _cs = config.get("course_sections") or {}
+    if _cs or config.get("student_sections"):
+        _by_code, _batch_of = defaultdict(set), {}
+        for st in students:
+            _batch_of[st["sid"]] = st.get("batch") or st.get("program") or ""
+            for (code, _cell, _info) in (student_papers.get(st["sid"]) or []):
+                _by_code[str(code).upper()].add(st["sid"])
+        sec_of = sections_for(_by_code, config, _batch_of)
+        if sec_of:
+            _moved = apply_section_seating(sessions_layout, sec_of)
+            for si, sess in enumerate(sessions_layout):
+                for room in sess["rooms"]:
+                    for r in room["rows"]:
+                        for c in _session_cells[si]:
+                            if (r["sid"], c) in seat_of:
+                                seat_of[(r["sid"], c)] = (room["name"], r["seat"])
+                                break
+            print(f"[admit] sections: {len({c for (_s, c) in sec_of})} multi-section course(s), "
+                  f"{len(sec_of)} student-papers labelled, {_moved} seat(s) re-ordered A→B→C", file=sys.stderr)
 
     # 6b) UNSEATED GUARD — a scheduled paper with NO seat means the venues ran out
     # of capacity for that session. The engine must NEVER silently drop a student:
@@ -2074,21 +2365,23 @@ def run(config: dict) -> dict:
                 room_txt, seat_txt = pos          # (room, seat_label)
             else:
                 room_txt, seat_txt = "—", "—"
+            _sec = sec_of.get((st["sid"], str(code).upper()), "")
+            _teacher = section_teacher(code, _sec, info["teacher"])
             rows.append({
-                "sr": i, "code": code, "title": info["name"],
-                "teacher": info["teacher"],
+                "sr": i, "code": code, "title": info["name"] + (f" — Section {_sec}" if _sec else ""),
+                "teacher": _teacher,
                 "date": info["date"].strftime("%d-%b-%Y"),
                 "day": info["day"][:3], "time": info["slot_label"],
                 "room": room_txt, "seat": seat_txt,
             })
             start_t, finish_t = _slot_bounds(info["slot_label"])
             exams.append({
-                "code": code, "name": info["name"], "teacher": info["teacher"],
+                "code": code, "name": info["name"], "teacher": _teacher,
                 "date": info["date"].strftime("%Y-%m-%d"),
                 "date_disp": info["date"].strftime("%d-%b-%Y"),
                 "day": info["day"], "slot": info["slot_label"],
                 "start": start_t, "finish": finish_t,
-                "room": room_txt, "seat": seat_txt,
+                "room": room_txt, "seat": seat_txt, "section": _sec,
             })
         # Unforgeable QR token: a random id followed by an HMAC signature keyed
         # on the backend's secret. A hand-made / tampered QR cannot produce a
@@ -2327,7 +2620,8 @@ def main():
 
     try:
         mode = cfg.get("mode")
-        result = course_pack(cfg) if mode == "course_pack" else rerender_docs(cfg) if mode == "rerender_docs" else run(cfg)
+        result = (course_pack(cfg) if mode == "course_pack" else rerender_docs(cfg) if mode == "rerender_docs"
+                  else resection(cfg) if mode == "resection" else run(cfg))
     except Exception as e:
         print(json.dumps({"status": "failed", "error": str(e)}))
         sys.exit(1)

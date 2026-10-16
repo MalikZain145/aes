@@ -65,6 +65,12 @@ function pickFiles() {
  * the current DB state. Exported so it can be tested without a database.
  */
 function planImport(sw, cw, current, { keepMissing = false } = {}) {
+  // ERP class list (odoocms.class) = the WHOLE offering: every course row it does not
+  // have is deactivated (the older class-wise report only touched its own rows).
+  const classList = !!cw.classList;
+  // credit hours: the class list has none → from the registration report ("- 3.0")
+  const creditOf = new Map();
+  for (const c of sw.courses || []) if (c.code && c.creditHours != null && !creditOf.has(up(c.code))) creditOf.set(up(c.code), Number(c.creditHours));
   const plan = { studentUpserts: [], studentsNew: 0, studentsChanged: 0, studentsSame: 0, studentsRemoved: [],
     courseUpserts: [], coursesNew: 0, coursesUpdated: 0, coursesDeactivated: [], keptNoExam: [], teachersNew: [] };
 
@@ -86,26 +92,36 @@ function planImport(sw, cw, current, { keepMissing = false } = {}) {
 
   // ── courses ──
   const curByFull = new Map(current.courses.map((c) => [c.fullCode, c]));
-  const oldNoExam = new Set(current.courses.filter((c) => c.noExam).map((c) => up(c.code)));
+  // no-exam marks the admin made (yellow rows / manual removals) are kept — from
+  // LECTURE rows only, so a lab row's flag never removes its course's written paper
+  const oldNoExam = new Set(current.courses.filter((c) => c.noExam && c.active !== false && c.component !== 'Lab').map((c) => up(c.code)));
   const newFull = new Set();
   for (const c of cw.courses || []) {
     if (!c.fullCode || newFull.has(c.fullCode)) continue;
     newFull.add(c.fullCode);
-    const keep = !c.noExam && oldNoExam.has(up(c.code));
+    const keep = !c.noExam && c.component !== 'Lab' && oldNoExam.has(up(c.code));
     if (keep) plan.keptNoExam.push(up(c.code));
     const set = {
       code: up(c.code), name: c.name || up(c.code), component: c.component === 'Lab' ? 'Lab' : 'Lecture',
       section: c.section || '', teacher: c.teacher || 'TBA', enrolled: Number(c.enrolled) || 0,
-      creditHours: c.creditHours != null ? Number(c.creditHours) : 3,
+      creditHours: c.creditHours != null ? Number(c.creditHours) : (creditOf.has(up(c.code)) ? creditOf.get(up(c.code)) : 3),
       noExam: !!c.noExam || keep, noTimetable: !!c.noTimetable, active: true,
       ...(c.academicTerm ? { academicTerm: c.academicTerm } : {}),
+      ...(classList ? { programBatch: c.programBatch || '', programBatches: c.programBatches || [], erpEnrolled: Number(c.enrolled) || 0,
+        ...(c.program ? { program: c.program } : {}), ...(c.department ? { department: c.department } : {}), level: c.level === 'PG' ? 'PG' : 'UG' } : {}),
     };
     if (curByFull.has(c.fullCode)) plan.coursesUpdated++; else plan.coursesNew++;
     plan.courseUpserts.push({ fullCode: c.fullCode, set, insertOnly: { department: c.department || '', level: c.level === 'PG' ? 'PG' : 'UG', program: c.program || '', programBatch: c.programBatch || '' } });
   }
   plan.keptNoExam = [...new Set(plan.keptNoExam)].sort();
+  // a code students are still registered in, that the new list has no row for at all
+  // (ERP renamed it, e.g. MG116 → MG202), keeps its old row — its paper is not lost
+  const newCodes = new Set((cw.courses || []).map((c) => up(c.code)));
+  const regCodes = new Set((sw.studentRegistrations || []).flatMap((r) => (r.courses || []).map(up)));
+  plan.coursesKeptRegistered = [];
   plan.coursesDeactivated = current.courses
-    .filter((c) => c.active !== false && !newFull.has(c.fullCode) && IMPORTER_FULLCODE.test(c.fullCode || ''))
+    .filter((c) => c.active !== false && !newFull.has(c.fullCode) && (classList || IMPORTER_FULLCODE.test(c.fullCode || '')))
+    .filter((c) => { const k = !newCodes.has(up(c.code)) && regCodes.has(up(c.code)); if (k) plan.coursesKeptRegistered.push(c.fullCode); return !k; })
     .map((c) => c.fullCode);
 
   // ── teachers ──
@@ -133,6 +149,7 @@ function printPlan(plan, files) {
   console.log('Courses');
   console.log(`  new ${plan.coursesNew} · updated ${plan.coursesUpdated} · deactivated (no longer in report) ${plan.coursesDeactivated.length}`);
   if (plan.coursesDeactivated.length) console.log(`  deactivated: ${plan.coursesDeactivated.join(', ').slice(0, 800)}`);
+  if ((plan.coursesKeptRegistered || []).length) console.log(`  kept active (still registered, not in the new list): ${plan.coursesKeptRegistered.join(', ')}`);
   if (plan.keptNoExam.length) console.log(`  no-exam flag kept from the DB (${plan.keptNoExam.length}): ${plan.keptNoExam.join(', ').slice(0, 800)}`);
   if (plan.regCodesWithoutCourse.length) console.log(`  ⚠ registered but missing in class-wise report: ${plan.regCodesWithoutCourse.join(', ')}`);
   console.log(`Teachers\n  new ${plan.teachersNew.length}`);
@@ -154,7 +171,7 @@ async function applyReports(files, { keepMissing = false, dry = false, log = con
 
   const current = {
     students: await StudentRegistration.find({}).lean(),
-    courses: await Course.find({}).select('fullCode code noExam active').lean(),
+    courses: await Course.find({}).select('fullCode code noExam active component').lean(),
     teachers: (await Teacher.find({}).select('name').lean()).map((t) => t.name),
   };
   const plan = planImport(sw, cw, current, { keepMissing });
@@ -175,7 +192,9 @@ async function applyReports(files, { keepMissing = false, dry = false, log = con
   }
   if (plan.courseUpserts.length) {
     await Course.bulkWrite(plan.courseUpserts.map((u) => ({
-      updateOne: { filter: { fullCode: u.fullCode }, update: { $set: u.set, $setOnInsert: { fullCode: u.fullCode, ...u.insertOnly } }, upsert: true },
+      // a path may not be in $set AND $setOnInsert (Mongo rejects the whole write)
+      updateOne: { filter: { fullCode: u.fullCode }, update: { $set: u.set, $setOnInsert: { fullCode: u.fullCode,
+        ...Object.fromEntries(Object.entries(u.insertOnly).filter(([k]) => !(k in u.set))) } }, upsert: true },
     })), { ordered: false });
   }
   if (plan.coursesDeactivated.length) {
@@ -185,6 +204,11 @@ async function applyReports(files, { keepMissing = false, dry = false, log = con
   // teachers in the report are not added as separate teachers.
   if (plan.teachersNew.length && !(await Teacher.exists({ inFacultyList: true }))) await Teacher.insertMany(plan.teachersNew, { ordered: false }).catch(() => null);
 
+  // ERP class list: a code students are registered in that has no row at all (e.g.
+  // MG569) gets one from the registration report, so its paper has a title
+  if (cw.classList) {
+    try { const a = await require('../utils/paperTeachers').addRegisteredCourses(files.students); if (a.length) log(`Course rows added from registrations: ${a.join(', ')}`); } catch (e) { log(`Registered-course rows skipped: ${e.message}`); }
+  }
   const { deriveCourseMeta } = require('../utils/deriveCourseMeta');
   await deriveCourseMeta();
   // enrollment = students actually registered in each course (fresh count)

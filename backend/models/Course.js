@@ -24,6 +24,14 @@ const courseSchema = new mongoose.Schema(
     // e.g. "BSCS-Spring 24"
     programBatch: { type: String, default: '', trim: true },
 
+    // Every program batch the ERP class list names for this section (e.g. CS432-B →
+    // ["BSCS-Fall 24"]) — students sit with the section of their batch.
+    programBatches: { type: [String], default: undefined },
+
+    // Enrollment the ERP class list gives this section (enrolled is recounted from
+    // the registrations; this one is kept as the section's size target).
+    erpEnrolled: { type: Number, default: undefined },
+
     // Readable program name resolved from programBatch (e.g. "BS Computer Science")
     program: { type: String, default: '' },
 

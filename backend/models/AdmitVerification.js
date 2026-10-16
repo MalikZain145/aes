@@ -17,6 +17,7 @@ const examSchema = new mongoose.Schema({
   finish: String,     // '12:00'
   room: String,
   seat: String,
+  section: String,    // 'A' / 'B' / 'C' for a course the report lists with several sections
   key: String,        // 64-bit HMAC verification key for THIS student's THIS paper
 }, { _id: false });
 

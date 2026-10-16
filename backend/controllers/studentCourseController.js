@@ -168,6 +168,31 @@ async function findSeatForCourse(code, batchId, cell, myBatch, capOf = {}) {
   return null;
 }
 
+/** section for a student newly added to a multi-section course: the section of his
+ *  program batch (ERP class list, same rule as the admit cards), else the smallest */
+async function sectionFor(code, batchId, student) {
+  try {
+    const secs = (await require('../utils/sections').courseSections())[up(code)];
+    if (!secs) return '';
+    if (student && student.studentId) {
+      try {
+        const Course = require('../models/Course');
+        const rows = await Course.find({ active: true, component: { $ne: 'Lab' }, code: up(code) })
+          .select('code section programBatch programBatches erpEnrolled enrolled').lean();
+        const regs = await StudentRegistration.find({ courses: up(code) }).select('studentId program batch courses').lean();
+        const me = { studentId: String(student.studentId), program: student.program, batch: student.batch, courses: [up(code)] };
+        const plan = require('../utils/sectionPlan').planSections(rows, [...regs.filter((r) => String(r.studentId) !== me.studentId), me]);
+        const L = plan.get(`${me.studentId}|${up(code)}`);
+        if (L && secs.includes(L)) return L;
+      } catch { /* fall back below */ }
+    }
+    const avs = await AdmitVerification.find({ batchId, 'exams.code': up(code) }).select('exams').lean();
+    const n = Object.fromEntries(secs.map((x) => [x, 0]));
+    for (const a of avs) for (const e of a.exams || []) if (up(e.code) === up(code) && n[e.section] != null) n[e.section]++;
+    return secs.slice().sort((x, y) => n[x] - n[y] || x.localeCompare(y))[0];
+  } catch { return ''; }
+}
+
 async function roomCapacities(batchId) {
   try {
     const batch = await GeneratedFile.findById(batchId).lean();
@@ -220,6 +245,7 @@ exports.editCourse = async (req, res) => {
       spot = await findSeatForCourse(seatCode, av.batchId, cell, av.batch || student.batch, await roomCapacities(av.batchId));
       if (!spot) return res.status(409).json({ error: `No free seat for ${seatCode} on ${cell.dateDisp || cell.date} ${cell.slot} (rooms full or only same-batch benches). Not ${action === 'add' ? 'added' : 'changed'}.` });
       spot.dateDisp = cell.dateDisp; spot.day = cell.day;
+      spot.section = await sectionFor(seatCode, av.batchId, student);
     }
   }
 
@@ -240,7 +266,7 @@ exports.editCourse = async (req, res) => {
     if (spot) {
       av.exams.push({
         code, name: (c && c.name) || code, teacher: (c && c.teacher) || '',
-        date: spot.date, dateDisp: spot.dateDisp, day: spot.day, slot: spot.slot, room: spot.room, seat: spot.seat,
+        date: spot.date, dateDisp: spot.dateDisp, day: spot.day, slot: spot.slot, room: spot.room, seat: spot.seat, section: spot.section || '',
         start: String(spot.slot).split('-')[0], finish: String(spot.slot).split('-')[1],
         key: av.token ? admitCrypto.paperKey(av.token, code, spot.date, spot.slot) : '',
       });
@@ -267,7 +293,7 @@ exports.editCourse = async (req, res) => {
         if (spot) {
           av.exams.push({
             code: newCode, name: (c && c.name) || newCode, teacher: (c && c.teacher) || '',
-            date: spot.date, dateDisp: spot.dateDisp, day: spot.day, slot: spot.slot, room: spot.room, seat: spot.seat,
+            date: spot.date, dateDisp: spot.dateDisp, day: spot.day, slot: spot.slot, room: spot.room, seat: spot.seat, section: spot.section || '',
             // per-(student,paper) verification key, keyed like the batch generator
             key: av.token ? admitCrypto.paperKey(av.token, newCode, spot.date, spot.slot) : '',
           });

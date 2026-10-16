@@ -35,6 +35,11 @@ router.get('/tags', adminOrFinance, ctrl.generateTags);
 // Course pack: one course's ID sheets / seating / invigilation / admit cards from the issued batch
 const cp = require('../controllers/admitCoursePackController');
 router.get('/admit-course/search', adminOrFinance, cp.search);
+// Re-apply the section rule to an issued batch (sections never merged; A→B→C seating)
+router.post('/admit-cards/:id/sections', admin, async (req, res) => {
+  try { res.json({ ok: true, ...(await require('../utils/sections').resectionBatch(req.params.id)) }); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
 router.get('/invigilation-xlsx', adminOrFinance, cp.batchXlsx);
 router.get('/admit-course/:code/xlsx', adminOrFinance, cp.courseXlsx);
 router.get('/admit-course/:code', adminOrFinance, cp.summary);

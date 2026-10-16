@@ -68,3 +68,6 @@
   .acs-sug-meta { grid-column: 1 / -1; }
 }
 .acs-doc-ic.xl { background: linear-gradient(135deg, #1d8a4e, #0f5b32); }
+.acs-sec-ok { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; color: var(--ok); }
+.acs-sec-warn { font-size: 12px; font-weight: 700; color: var(--warn); }
+.acs-sec-msg { font-size: 12px; color: var(--text-soft); flex-basis: 100%; }

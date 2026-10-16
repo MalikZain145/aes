@@ -75,6 +75,9 @@ function detectShape(rows) {
   const keys = Object.keys(rows[0]).map((k) => k.toLowerCase().trim());
   const has = (needle) => keys.some((k) => k.includes(needle));
   if (has('courses with names')) return 'student';
+  // ERP class list (odoocms.class): Code "CS313-Fall 26-01-Section-A-lecture" + Primary
+  // Faculty + Program Batch, one row per class (section × component), no Component column.
+  if (keys.includes('code') && has('primary faculty') && has('program batch') && !keys.includes('component')) return 'classlist';
   // Course-wise enrolment report: Course Code + Course Title + Meta Details
   // (per-section "Section-X - n - Teacher"). No per-student data.
   if ((has('course code') || has('course title')) && (has('meta details') || has('enrolled students')) && !has('courses with names')) return 'coursewise';
@@ -263,6 +266,82 @@ function parseStudentWise(rows) {
   return { courses: finalCourses, teachers: [], studentRegistrations };
 }
 
+// ── ERP class-list parser (odoocms.class export) ────────────────────────────
+// One row per class: "CS313-Fall 26-01-Section-A-lecture" | name | term | faculty |
+// enrolled | "BSCS-Fall 24". Sections are taken EXACTLY as written (never invented):
+// every class with the same code + letter + component is one Course row; its program
+// batches are kept (programBatches) so students sit with the section of their batch.
+function parseClassList(rows) {
+  const col = {};
+  Object.keys(rows[0]).forEach((k) => { col[k.toLowerCase().trim()] = k; });
+  const cEn = col['enrolled students'] || col['enrolled'];
+  const groups = new Map();   // fullCode → merged row
+  const teacherMap = new Map();
+  // A class written WITHOUT a section letter next to lettered classes of the same course
+  // (MG403 "…-01-CE-lecture" beside "…-02-Section-A-lecture") is its own section: it gets
+  // the next free letter (→ B), so its students are never merged into section A.
+  const tokOf = (raw) => { const t = raw.match(/-([^-]+)-(?:lecture|lab)$/i); return t ? t[1].toUpperCase() : ''; };
+  const letterOf = (raw) => { const sm = raw.match(/-(?:Section-)?([A-Za-z])-(?:lecture|lab)$/i); return sm ? sm[1].toUpperCase() : ''; };
+  const extraLetter = new Map();   // CODE|TOKEN → letter
+  {
+    const used = new Map(); const loose = new Map();
+    for (const row of rows) {
+      const raw = norm(row[col.code]);
+      if (!/-(lecture|lab)$/i.test(raw)) continue;
+      const code = extractCode(raw); const L = letterOf(raw);
+      if (L) { if (!used.has(code)) used.set(code, new Set()); used.get(code).add(L); }
+      else { if (!loose.has(code)) loose.set(code, new Set()); loose.get(code).add(tokOf(raw)); }
+    }
+    for (const [code, toks] of loose) {
+      const u = used.get(code); if (!u || !u.size) continue;   // no lettered class → stays one section
+      const taken = new Set(u);
+      for (const tok of [...toks].sort()) {
+        const L = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').find((x) => !taken.has(x));
+        taken.add(L); extraLetter.set(`${code}|${tok}`, L);
+      }
+    }
+  }
+  for (const row of rows) {
+    const raw = norm(row[col.code]);
+    const m = raw.match(/-(lecture|lab)$/i);
+    if (!m) continue;   // the "Fall 2026 (1066)" group header etc.
+    const component = /lab/i.test(m[1]) ? 'Lab' : 'Lecture';
+    const code = extractCode(raw);
+    const section = letterOf(raw) || extraLetter.get(`${code}|${tokOf(raw)}`) || '';
+    const name = norm(row[col.name]).replace(/\s*\(\d+(?:\.\d+)?\)\s*$/, '').replace(/\s*\(\d\+\d\)\s*$/, '').trim() || code;
+    const enrolled = parseInt(row[cEn], 10) || 0;
+    const pb = norm(row[col['program batch']]);
+    const fac = parseFaculty(row[col['primary faculty']]);
+    if (fac.name && fac.name !== 'TBA' && !teacherMap.has(fac.name)) teacherMap.set(fac.name, { name: fac.name, email: fac.email || '', facultyId: fac.facultyId || '' });
+    const fullCode = `${code}-${section || 'X'}-${component}`;
+    let g = groups.get(fullCode);
+    if (!g) {
+      g = { fullCode, code, name, component, section, programBatch: '', programBatches: [], program: '', academicTerm: norm(row[col['academic term']]) || '',
+        teacher: 'TBA', enrolled: 0, creditHours: null, _best: -1, _bestT: -1 };
+      groups.set(fullCode, g);
+    }
+    g.enrolled += enrolled;
+    if (pb && enrolled > 0 && !g.programBatches.includes(pb)) g.programBatches.push(pb);
+    if (enrolled > g._best) { g._best = enrolled; g.name = name; if (pb) { g.programBatch = pb; g.program = pbToProgram(pb); } }
+    if (fac.name && fac.name !== 'TBA' && enrolled > g._bestT) { g._bestT = enrolled; g.teacher = fac.name; }
+  }
+  const all = [...groups.values()];
+  const lectureCodes = new Set(all.filter((c) => c.component === 'Lecture').map((c) => c.code));
+  const lectureNoExam = new Set(all.filter((c) => c.component === 'Lecture' && NON_EXAM_RE.test(c.name)).map((c) => c.code));
+  const courses = all.map((c) => {
+    const { _best, _bestT, ...rest } = c;
+    let department = ''; try { department = resolveDepartment(c.code, c.name, c.program) || ''; } catch { department = ''; }
+    let level = 'UG'; try { level = isPostgradCode(c.code) ? 'PG' : 'UG'; } catch { level = 'UG'; }
+    return {
+      ...rest, department, level,
+      // a Lab row never removes its course's written paper; a LAB-ONLY course has none
+      noExam: c.component === 'Lab' ? (!lectureCodes.has(c.code) || lectureNoExam.has(c.code)) : NON_EXAM_RE.test(c.name),
+      noTimetable: NON_CLASS_RE.test(c.name),
+    };
+  });
+  return { courses, teachers: Array.from(teacherMap.values()), studentRegistrations: [], classList: true };
+}
+
 // ── timetable parser (original) ─────────────────────────────────────────────
 function parseTimetable(rows) {
   const teacherMap = new Map();
@@ -365,6 +444,7 @@ function parseDataset(xlsxPath) {
 
   const shape = detectShape(rows);
   if (shape === 'student') return parseStudentWise(rows);
+  if (shape === 'classlist') return parseClassList(rows);
   if (shape === 'timetable') return parseTimetable(rows);
   if (shape === 'coursewise') {
     // find the Course Code column letter, then collect codes whose cell fill is yellow
@@ -401,4 +481,4 @@ function parseDataset(xlsxPath) {
   );
 }
 
-module.exports = { parseDataset, parseStudentWise, parseTimetable, SECTION_LIMIT };
+module.exports = { parseDataset, parseStudentWise, parseTimetable, parseClassList, SECTION_LIMIT };

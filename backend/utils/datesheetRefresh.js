@@ -350,7 +350,7 @@ async function noExamSet(cohortExportPath) {
   const { runPython, OUTPUT_DIR } = require('./pythonRunner');
   const Course = require('../models/Course');
   const codesPath = path.join(OUTPUT_DIR, `noexam_codes_${Date.now()}.json`);
-  fs.writeFileSync(codesPath, JSON.stringify((await Course.distinct('code', { noExam: true })).map(up)));
+  fs.writeFileSync(codesPath, JSON.stringify((await Course.distinct('code', { noExam: true, active: { $ne: false } })).map(up)));
   try {
     const { code, stdout } = await runPython('-m', ['exam_engine.no_exam', 'auto', '--data', cohortExportPath, '--db-no-exam', codesPath], { timeoutMs: 120000 });
     const r = JSON.parse(String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}');
@@ -526,11 +526,11 @@ async function refreshAllDatesheets(opts = {}) {
  * no change to any paper — used to switch the existing sheets to landscape pages.
  * The PDF is replaced under the SAME filename, so links/downloads keep working.
  */
-async function rerenderAllDatesheets() {
+async function rerenderAllDatesheets({ only } = {}) {
   const GeneratedFile = require('../models/GeneratedFile');
   const { OUTPUT_DIR, SCHEDULER_DIR, runPython, fileSize } = require('./pythonRunner');
   const ed = require('../controllers/datesheetEditorController')._internals;
-  const recs = await GeneratedFile.find({ kind: 'datesheet' });
+  const recs = (await GeneratedFile.find({ kind: 'datesheet' })).filter((r) => !only || only.has(String(r._id)));
   const out = { done: 0, skipped: [], failed: [] };
   for (const rec of recs) {
     const sf = rec.meta && rec.meta.scheduleFile;
@@ -563,4 +563,24 @@ async function rerenderAllDatesheets() {
   return out;
 }
 
-module.exports = { rerenderAllDatesheets, planRefresh, refreshDatesheet, refreshAllDatesheets, span };
+/** A paper whose title is missing on a datesheet (course had no row when it was added,
+ *  e.g. MG569) gets its title from the Course rows; those sheets are re-rendered. */
+async function fillDatesheetTitles(names) {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const fixed = new Set(); const codes = new Set();
+  for (const rec of await GeneratedFile.find({ kind: 'datesheet', archived: { $ne: true } })) {
+    const sf = rec.meta && rec.meta.scheduleFile; const p = sf ? path.join(OUTPUT_DIR, path.basename(sf)) : null;
+    if (!p || !fs.existsSync(p)) continue;
+    const snap = JSON.parse(fs.readFileSync(p, 'utf-8')); let ch = false;
+    for (const c of snap.courses || []) {
+      const k = up(c.code);
+      if ((!c.name || up(c.name) === k) && names[k]) { c.name = names[k]; ch = true; codes.add(k); }
+    }
+    if (ch) { fs.writeFileSync(p, JSON.stringify(snap)); fixed.add(String(rec._id)); }
+  }
+  const r = fixed.size ? await rerenderAllDatesheets({ only: fixed }) : { done: 0, failed: [] };
+  return { codes: [...codes], sheets: r.done, failed: r.failed };
+}
+
+module.exports = { fillDatesheetTitles, rerenderAllDatesheets, planRefresh, refreshDatesheet, refreshAllDatesheets, span };

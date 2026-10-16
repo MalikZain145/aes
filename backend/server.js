@@ -98,7 +98,9 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
   // One-time maintenance (each runs once per database): remove the generated class
   // timetables, set the Exam Cell / Finance login usernames.
-  try { await require('./utils/oneTimeTasks').runOneTimeTasks(); } catch (e) { console.warn('One-time tasks:', e.message); }
+  // Runs in the BACKGROUND so a long task (datesheet / admit-card re-print) never
+  // delays the server from starting; each task logs its own result.
+  require('./utils/oneTimeTasks').runOneTimeTasks().catch((e) => console.warn('One-time tasks:', e.message));
   // Every registered student gets a Student Portal login (reg no / student123):
   // created now for anyone missing, then new registration records are detected
   // automatically and their logins are created too.
