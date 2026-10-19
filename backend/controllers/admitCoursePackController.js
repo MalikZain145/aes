@@ -19,6 +19,7 @@ const path = require('path');
 const GeneratedFile = require('../models/GeneratedFile');
 const AdmitVerification = require('../models/AdmitVerification');
 const { OUTPUT_DIR, SCHEDULER_DIR, runPython } = require('../utils/pythonRunner');
+const XLSX = require('xlsx');   // in-process Excel build for the fast duty-roster download
 
 const PACK_DIR = path.join(OUTPUT_DIR, 'coursepack');
 const DOCS = {
@@ -293,8 +294,21 @@ async function rosterWorkbook(layoutPath, code, title) {
   // No old-style fallback any more: if Python fails the error is shown, never the old format.
   const byTeacher = [...perT.entries()].sort((a, b) => a[0].localeCompare(b[0]))
     .map(([n, p]) => { const t = who(n); return [n, t.facultyId || '', t.designation || '', p.duties, p.dates.size, p.list.join('  |  ')]; });
-  void aoa; void title;
-  return (await rosterFiles(layoutPath, code, { xlsx: true, byTeacher })).xlsx;
+  // Build the Excel IN-PROCESS with SheetJS — fast (~1-2s). The Python/openpyxl
+  // path (rosterFiles) took 20-40s on the free tier (python startup + imports),
+  // so the download felt stuck after the click. This gives the same data instantly
+  // as a clean, autofiltered table + a By-teacher sheet.
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = head.map((h) => ({ wch: /Invigilator/.test(h) ? 30 : /Papers/.test(h) ? 34 : /Signature/.test(h) ? 24 : 13 }));
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(aoa.length - 1, 1), c: head.length - 1 } }) };
+  XLSX.utils.book_append_sheet(wb, ws, 'Invigilation');
+  const tAoa = [['Teacher', 'Faculty ID', 'Designation', 'Duties', 'Exam days', 'Duty list (date · time · room)'], ...byTeacher];
+  const ts = XLSX.utils.aoa_to_sheet(tAoa);
+  ts['!cols'] = [{ wch: 32 }, { wch: 11 }, { wch: 26 }, { wch: 8 }, { wch: 10 }, { wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, ts, 'By teacher');
+  if (title) wb.Props = { Title: title };
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
 
 /** fresh duty roster (Exam Office format) straight from the batch layout — xlsx and/or pdf buffers */
