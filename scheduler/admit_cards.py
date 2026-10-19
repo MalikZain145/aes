@@ -1694,7 +1694,8 @@ def roster_title(meta, subtitle=None):
     term = f" {t.group(1).title()} {t.group(2)}" if t else ""
     base = f"Duty Roster of {kind}{term}"
     if subtitle and not re.search(r"roster", subtitle, re.I):
-        base += f" — {re.sub(r'^Invigilation\s*[—-]\s*', '', subtitle)}"
+        clean = re.sub(r'^Invigilation\s*[—-]\s*', '', subtitle)   # backslash out of f-string (Py<3.12)
+        base += f" — {clean}"
     return base
 
 
