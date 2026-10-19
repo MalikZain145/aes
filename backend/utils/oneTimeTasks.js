@@ -366,6 +366,432 @@ async function instructionsUnderTable20261016() {
   return `${b.title}: ${r.cards || 0} admit cards re-printed (instructions under the course table)`;
 }
 
+// Exam office (19 Oct): the Fall-2026 BS / BE / B.Tech intake sits no mid-term, so the
+// courses that intake is registered in (Course Registration Report, "Batch Intake" =
+// Fall 2026) get no paper either — for EVERY student who registered them. Six
+// transfer / lateral Fall-2026 students also hold upper-semester courses (CS313,
+// CS375, MT201 …); those stay (they are older batches' regular papers).
+// Removed from the BS + B.Tech datesheets, the issued admit cards, seating plan,
+// identification sheets and duty roster. Nobody else is re-seated.
+const FALL26_FIRST_SEMESTER = ['CE1013', 'CE1113', 'CS1013', 'CS106', 'CS114', 'ENG102', 'ENG103', 'HM1033', 'LT102', 'LT103', 'LT107', 'MD1073', 'MG100', 'MG105', 'MG109', 'MT112', 'MT129', 'NS201', 'RT101', 'RT102', 'RT104', 'SS108', 'SS118', 'SS130', 'SS216', 'SS233', 'SU103'];
+async function dropFall26Courses20261019() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const drop = new Set(FALL26_FIRST_SEMESTER);
+  const up = (x) => String(x || '').trim().toUpperCase();
+
+  // 1) datesheets — take the papers out (and keep them out on any later refresh)
+  const fixed = new Set(); const offSheet = new Set();
+  for (const rec of await GeneratedFile.find({ kind: 'datesheet', archived: { $ne: true } })) {
+    const sf = rec.meta && rec.meta.scheduleFile;
+    const p = sf ? path.join(OUTPUT_DIR, path.basename(sf)) : null;
+    if (!p || !fs.existsSync(p)) continue;
+    const snap = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const gone = (snap.courses || []).filter((c) => drop.has(up(c.code))).map((c) => up(c.code));
+    if (!gone.length) continue;
+    snap.courses = (snap.courses || []).filter((c) => !drop.has(up(c.code))).map((c) => {
+      if (!c.group || !String(c.group).includes('+')) return c;
+      const left = String(c.group).split('+').map(up).filter((x) => !drop.has(x));
+      return { ...c, group: left.length > 1 ? left.join('+') : up(c.code) };
+    });
+    for (const sess of snap.sessions || []) if (Array.isArray(sess.codes)) sess.codes = sess.codes.filter((x) => !drop.has(up(x)));
+    snap.excluded_codes = [...new Set([...(snap.excluded_codes || []), ...gone])];
+    fs.writeFileSync(p, JSON.stringify(snap));
+    const log = Array.isArray(rec.meta.editLog) ? rec.meta.editLog : [];
+    log.push({ at: new Date().toISOString(), removed: gone, note: 'Fall-2026 intake courses removed (no mid-term for the Fall 2026 intake)' });
+    rec.meta = { ...rec.meta, editLog: log.slice(-50) };
+    rec.markModified('meta'); await rec.save();
+    gone.forEach((c) => offSheet.add(c)); fixed.add(String(rec._id));
+  }
+  const ds = fixed.size ? await require('./datesheetRefresh').rerenderAllDatesheets({ only: fixed }) : { done: 0, failed: [] };
+  if (ds.failed && ds.failed.length) throw new Error(`datesheet re-print failed: ${ds.failed.join('; ')}`);
+
+  // 2) the issued admit-card batch — drop those papers, keep every other seat
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  if (!b) return `datesheets: ${fixed.size} re-printed (${offSheet.size} papers removed); no admit-card batch`;
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  if (!fs.existsSync(layoutPath)) throw new Error('the admit-card batch has no _layout.json');
+  const avs = await AdmitVerification.find({ batchId: b._id }).lean();
+  fs.writeFileSync(path.join(OUTPUT_DIR, `backup_fall26_drop_${Date.now()}.json`),
+    JSON.stringify({ layout: path.basename(layoutPath), avs: avs.filter((a) => (a.exams || []).some((e) => drop.has(up(e.code)))) }));
+
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  let seatsFreed = 0; let roomsEmptied = 0;
+  L.sessions = (L.sessions || []).map((s) => ({
+    ...s,
+    rooms: (s.rooms || []).map((rm) => {
+      const before = (rm.rows || []).length;
+      const rows = (rm.rows || []).filter((r) => !drop.has(up(r.course)));
+      seatsFreed += before - rows.length;
+      return { ...rm, rows };
+    }).filter((rm) => { if (rm.rows.length) return true; roomsEmptied++; return false; }),
+  })).filter((s) => s.rooms.length);
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+
+  // admit-card records: drop the papers; a student left with no paper loses the card;
+  // the others keep their order → card pages renumbered 1..n
+  const keep = avs.map((a) => ({ a, exams: (a.exams || []).filter((e) => !drop.has(up(e.code))) }));
+  const noCard = keep.filter((k) => !k.exams.length && (k.a.exams || []).length);
+  const order = keep.filter((k) => k.exams.length && (k.a.cardPage || 0) > 0).sort((x, y) => x.a.cardPage - y.a.cardPage);
+  const page = new Map(order.map((k, i) => [String(k.a._id), i + 1]));
+  const ops = [];
+  for (const k of keep) {
+    const changed = k.exams.length !== (k.a.exams || []).length;
+    const np = page.get(String(k.a._id)) || 0;
+    if (!changed && np === (k.a.cardPage || 0)) continue;
+    ops.push({ updateOne: { filter: { _id: k.a._id }, update: { $set: { exams: k.exams, cardPage: np } } } });
+  }
+  for (let i = 0; i < ops.length; i += 500) await AdmitVerification.bulkWrite(ops.slice(i, i + 500), { ordered: false });
+
+  // re-print only — no seat, room or invigilator moves (MS cards are already with the students)
+  const before = new Map(avs.map((a) => [String(a.studentId), a.exams || []]));
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  let seatMoves = 0;
+  for (const a of await AdmitVerification.find({ batchId: b._id }).select('studentId exams').lean()) {
+    const old = new Map((before.get(String(a.studentId)) || []).map((e) => [`${e.code}|${e.date}|${e.slot}`, e]));
+    for (const e of a.exams || []) { const o = old.get(`${e.code}|${e.date}|${e.slot}`); if (o && (o.room !== e.room || o.seat !== e.seat)) seatMoves++; }
+  }
+  if (seatMoves) console.warn(`⚠ Fall-2026 removal: ${seatMoves} seats differ after the re-print`);
+  await GeneratedFile.updateOne({ _id: b._id }, { $set: { 'summary.admitCards': order.length, 'meta.fall26DroppedAt': new Date().toISOString(), 'meta.fall26Dropped': [...drop] } });
+  return `datesheets: ${fixed.size} re-printed, ${offSheet.size} papers removed | ${b.title}: ${seatsFreed} seats freed, ${roomsEmptied} room-sittings emptied, `
+    + `${noCard.length} students left with no paper (${noCard.map((k) => k.a.studentId).join(', ') || '—'}), ${r.cards || order.length} admit cards re-printed, seats moved: ${seatMoves}`;
+}
+
+// Exam office (19 Oct): four Fall-2026-intake students who are really transfer / lateral
+// entries get admit cards for their upper-semester papers, added into the ISSUED batch:
+// each paper goes to a free seat in a room that already writes it (same section where
+// the course has sections), nobody else moves, new cards are appended at the end.
+const LATERAL_ADD = {
+  11440: ['CS412', 'CS313', 'CS375', 'CS304', 'CS242', 'CS432'],      // first-semester courses left out
+  11536: ['MT201', 'CS375', 'SE350', 'SE321', 'CS313', 'CS432'],
+  11506: ['MG302', 'MG212', 'MG444', 'MT205', 'MG306'],               // MG105 dropped; MG444 + MG306 same slot (both kept)
+  19139: ['ENG308', 'ENG312', 'ENG401', 'SS402', 'ENG405', 'ENG309'],
+};
+async function addLateralStudents20261019() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-19.drop-fall26-first-semester' }).lean())) throw new Error('waiting for the Fall-2026 course removal');
+  const crypto = require('crypto');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const StudentRegistration = require('../models/StudentRegistration');
+  const admitCrypto = require('./admitCrypto');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const ed = require('../controllers/datesheetEditorController')._internals;
+  const up = (x) => String(x || '').trim().toUpperCase();
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const disp = (iso) => { const [y, m, d] = iso.split('-'); return `${d}-${MON[Number(m) - 1]}-${y}`; };
+  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  // where each paper sits on the BS datesheet
+  const when = new Map();
+  for (const rec of await GeneratedFile.find({ kind: 'datesheet', archived: { $ne: true } }).lean()) {
+    if (ed.datesheetCohort(rec) !== 'bs') continue;
+    const sf = rec.meta && rec.meta.scheduleFile; const p = sf ? path.join(OUTPUT_DIR, path.basename(sf)) : null;
+    if (!p || !fs.existsSync(p)) continue;
+    for (const c of JSON.parse(fs.readFileSync(p, 'utf-8')).courses || []) if (!when.has(up(c.code))) when.set(up(c.code), { date: c.date, slot: c.slot, name: c.name || '' });
+  }
+
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  if (!b) throw new Error('no admit-card batch');
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const cap = new Map((L.venues || []).map((v) => [v.name, v]));
+  const avs = await AdmitVerification.find({ batchId: b._id }).lean();
+  const have = new Set(avs.map((a) => String(a.studentId)));
+  const sample = avs.find((a) => a.heading) || avs[0];
+  let page = Math.max(0, ...avs.map((a) => a.cardPage || 0));
+
+  // section + teacher of every (course, program) from the issued cards
+  const secByProg = new Map(); const secAll = new Map(); const teacher = new Map();
+  for (const a of avs) {
+    for (const e of a.exams || []) {
+      const c = up(e.code);
+      if (e.section) {
+        const k1 = `${c}|${a.program}`; if (!secByProg.has(k1)) secByProg.set(k1, new Map());
+        secByProg.get(k1).set(e.section, (secByProg.get(k1).get(e.section) || 0) + 1);
+        if (!secAll.has(c)) secAll.set(c, new Map());
+        secAll.get(c).set(e.section, (secAll.get(c).get(e.section) || 0) + 1);
+      }
+      if (e.teacher) teacher.set(`${c}|${e.section || ''}`, e.teacher);
+      if (e.teacher && !teacher.has(`${c}|*`)) teacher.set(`${c}|*`, e.teacher);
+    }
+  }
+  const top = (m) => (m && m.size ? [...m.entries()].sort((x, y) => y[1] - x[1])[0][0] : '');
+
+  const placed = []; const docs = [];
+  for (const [sidNum, codes] of Object.entries(LATERAL_ADD)) {
+    const sid = String(sidNum);
+    if (have.has(sid)) { placed.push(`${sid}: already has a card`); continue; }
+    const reg = await StudentRegistration.findOne({ studentId: sid }).lean();
+    if (!reg) throw new Error(`${sid} is not in the registrations`);
+    const exams = [];
+    for (const code of codes.map(up)) {
+      const w = when.get(code);
+      if (!w) throw new Error(`${sid}: ${code} is not on the BS datesheet`);
+      const dd = disp(w.date);
+      const sess = (L.sessions || []).find((s) => s.date === dd && s.slot === w.slot);
+      if (!sess) throw new Error(`${sid}: no sitting ${dd} ${w.slot} in the seating`);
+      const section = top(secByProg.get(`${code}|${reg.program}`)) || top(secAll.get(code)) || '';
+      // rooms: same course + same section first, then same course, then any room with space
+      const score = (rm) => {
+        const rows = rm.rows || [];
+        if (rows.some((r) => up(r.course) === code && (r.section || '') === section)) return 0;
+        if (rows.some((r) => up(r.course) === code)) return 1;
+        return 2;
+      };
+      let spot = null;
+      for (const rm of [...sess.rooms].sort((x, y) => score(x) - score(y))) {
+        const v = cap.get(rm.name); if (!v) continue;
+        const nRows = v.rows || Math.ceil((v.exam_seats || 0) / 2);
+        if ((rm.rows || []).length >= (v.exam_seats || nRows * 2)) continue;
+        const at = new Map((rm.rows || []).map((r) => [`${r.row}|${r.col}`, r]));
+        let best = null;
+        for (let r = 1; r <= nRows && !best; r++) {
+          for (const col of ['L', 'R']) {
+            if (at.has(`${r}|${col}`)) continue;
+            const mate = at.get(`${r}|${col === 'L' ? 'R' : 'L'}`);
+            if (mate && up(mate.course) === code) continue;          // never two of the same paper on one bench
+            best = { row: r, col }; break;
+          }
+        }
+        if (best) { spot = { rm, ...best }; break; }
+      }
+      if (!spot) throw new Error(`${sid}: no free seat for ${code} on ${dd} ${w.slot}`);
+      const seat = spot.col === 'L' ? String(spot.row) : `${spot.row}A`;
+      spot.rm.rows.push({ row: spot.row, col: spot.col, seat, sid, name: reg.name, program: reg.program, batch: reg.batch || reg.program,
+        course: code, time: w.slot, ...(section ? { section } : {}) });
+      const [st, fi] = String(w.slot).split('-');
+      exams.push({ code, name: w.name || (L.code_title || {})[code] || code, teacher: teacher.get(`${code}|${section}`) || teacher.get(`${code}|*`) || '',
+        date: w.date, dateDisp: dd, day: sess.day || DAYS[new Date(`${w.date}T12:00:00`).getDay()], slot: w.slot, start: st, finish: fi,
+        room: spot.rm.name, seat, section });
+      placed.push(`${sid} ${code} → ${spot.rm.name} ${seat}${section ? ` (Sec ${section})` : ''}`);
+    }
+    const qid = crypto.randomBytes(8).toString('hex');
+    const token = qid + admitCrypto.tokenSig(qid);
+    page += 1;
+    docs.push({ token, batchId: b._id, studentId: sid, name: reg.name, program: reg.program, batch: reg.batch || reg.program,
+      cardPage: page, feeStatus: 'Unpaid', heading: sample.heading, examType: sample.examType, semester: sample.semester, year: sample.year,
+      exams: exams.map((e) => ({ ...e, key: admitCrypto.paperKey(token, e.code, e.date, e.slot) })) });
+  }
+  if (!docs.length) return placed.join(' | ');
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+  await AdmitVerification.insertMany(docs, { ordered: true });
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  await GeneratedFile.updateOne({ _id: b._id }, { $set: { 'summary.admitCards': page } });
+  return `${docs.length} cards added (pages ${page - docs.length + 1}-${page}), ${r.cards || page} re-printed, nobody else moved | ${placed.join(' | ')}`;
+}
+
+// Exam office (19 Oct, 11:03): SS108, SS118, MT129 and SS216 come BACK — exactly as issued
+// before the Fall-2026 removal: same datesheet cell, same room, same seat, same QR / card.
+// Rebuilt from the backup taken by that removal. A just-added lateral student who had been
+// given one of those freed seats is moved to another free seat (their cards are new).
+const RESTORE4 = new Set(['SS108', 'SS118', 'MT129', 'SS216']);
+const RESTORE4_SHEET = {"bs":[{"code":"MT129","name":"Quantitative Reasoning -1","date":"2026-11-02","date_disp":"02-Nov-2026","day":"Monday","day_index":1,"slot_index":0,"slot":"09:00-10:30","students":["10242","10483","10781","10811","10900","10910","10911","10915","10916","10921","10931","10932","10933","10936","10957","10960","10965","10968","10980","10994","10995","11000","11005","11006","11008","11011","11029","11034","11035","11036","11037","11038","11047","11052","11057","11061","11066","11078","11098","11104","11106","11117","11120","11136","11140","11143","6006"],"group":"MT129","_sess":["2026-11-02","09:00-10:30"]},{"code":"SS118","name":"Pakistan Studies","date":"2026-11-03","date_disp":"03-Nov-2026","day":"Tuesday","day_index":2,"slot_index":2,"slot":"01:00-02:30","students":["10034","10072","10097","10149","10179","10208","10210","10246","10247","10287","10289","10290","10294","10295","10328","10329","10331","10333","10334","10366","10407","10410","10462","10464","10465","10466","10472","10473","10474","10546","10548","10549","10593","10594","10596","10597","10599","10600","10602","10605","10606","10607","10609","10610","10633","10656","10657","10661","10680","10681","10682","10683","10701","10719","10723","10729","10746","10763","10773","10774","10777","10795","10804","10814","10851","10852","10875","10888","10891","10900","10907","10915","10916","10922","10931","10932","10933","10957","10965","10972","10994","11000","11008","11020","11044","11066","11087","11098","11117","3758","5938","6209","6696","6953","7050","7414","7806","8020","8032","9417","9440","9517","9578","9649","9750","9946","9964"],"group":"SS118","_sess":["2026-11-03","01:00-02:30"]},{"code":"SS216","name":"Introduction to Sociology(3)","date":"2026-11-06","date_disp":"06-Nov-2026","day":"Friday","day_index":5,"slot_index":0,"slot":"09:00-10:30","students":["10208","10210","10247","10287","10289","10290","10294","10295","10328","10329","10333","10334","10366","10407","10410","10462","10464","10466","10474","10546","10548","10593","10594","10596","10597","10599","10600","10602","10605","10606","10607","10609","10610","10639","10656","10657","10661","10680","10682","10683","10701","10719","10723","10725","10729","10746","10747","10763","10773","10774","10804","10814","10851","10852","10888","10891","10907","10922","10972","11020","11044","11087","11142","5938","6209","7228","7369","7531","7537","8371","8629","8711","9160","9338","9440","9517","9578","9612","9649","9964","9995"],"group":"SS216","_sess":["2026-11-06","09:00-10:30"]},{"code":"SS108","name":"Islamic Studies","date":"2026-11-07","date_disp":"07-Nov-2026","day":"Saturday","day_index":6,"slot_index":1,"slot":"11:00-12:30","students":["10038","10115","10120","10136","10165","10663","10869","10910","10911","10921","10936","10960","10968","10980","10995","11005","11006","11011","11029","11034","11035","11036","11037","11038","11047","11052","11057","11061","11078","11104","11106","11115","11120","11136","11140","11143","11167","5814","6209","7168","7305","7486","7911","8020","8994","9887","9937","9998"],"group":"SS108","_sess":["2026-11-07","11:00-12:30"]}],"btech":[{"code":"SS118","name":"Pakistan Studies","date":"2026-11-02","date_disp":"02-Nov-2026","day":"Monday","day_index":2,"slot_index":2,"slot":"03:00-04:30","students":["10955","10956","10970","11017","11021","11109","11119","11127","11128","6764"],"group":"SS118","_sess":["2026-11-02","03:00-04:30"]}]};
+async function restoreFourCourses20261019() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-19.add-lateral-students' }).lean())) throw new Error('waiting for the lateral students');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const ed = require('../controllers/datesheetEditorController')._internals;
+  const up = (x) => String(x || '').trim().toUpperCase();
+
+  // 1) datesheets — the four papers back in their original cells
+  const fixed = new Set();
+  for (const rec of await GeneratedFile.find({ kind: 'datesheet', archived: { $ne: true } })) {
+    const add = RESTORE4_SHEET[ed.datesheetCohort(rec)];
+    if (!add) continue;
+    const sf = rec.meta && rec.meta.scheduleFile; const p = sf ? path.join(OUTPUT_DIR, path.basename(sf)) : null;
+    if (!p || !fs.existsSync(p)) continue;
+    const snap = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const on = new Set((snap.courses || []).map((c) => up(c.code)));
+    let ch = false;
+    for (const c0 of add) {
+      const { _sess, ...c } = c0;
+      if (!on.has(c.code)) { snap.courses.push(c); ch = true; }
+      if (_sess) for (const ss of snap.sessions || []) if (ss.date === _sess[0] && ss.slot === _sess[1] && Array.isArray(ss.codes) && !ss.codes.includes(c.code)) { ss.codes.push(c.code); ch = true; }
+    }
+    const ex = (snap.excluded_codes || []).filter((x) => !RESTORE4.has(up(x)));
+    if (ex.length !== (snap.excluded_codes || []).length) { snap.excluded_codes = ex; ch = true; }
+    if (!ch) continue;
+    fs.writeFileSync(p, JSON.stringify(snap));
+    const log = Array.isArray(rec.meta.editLog) ? rec.meta.editLog : [];
+    log.push({ at: new Date().toISOString(), restored: add.map((c) => c.code), note: 'SS108, SS118, MT129, SS216 restored to their original slots' });
+    rec.meta = { ...rec.meta, editLog: log.slice(-50) }; rec.markModified('meta'); await rec.save();
+    fixed.add(String(rec._id));
+  }
+  if (fixed.size) {
+    const r = await require('./datesheetRefresh').rerenderAllDatesheets({ only: fixed });
+    if (r.failed && r.failed.length) throw new Error(`datesheet re-print failed: ${r.failed.join('; ')}`);
+  }
+
+  // 2) admit cards / seating — from the backup of the removal
+  const bkName = fs.readdirSync(OUTPUT_DIR).filter((f) => /^backup_fall26_drop_\d+\.json$/.test(f)).sort().pop();
+  if (!bkName) throw new Error('backup_fall26_drop_*.json not found');
+  const bk = JSON.parse(fs.readFileSync(path.join(OUTPUT_DIR, bkName), 'utf-8'));
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const sessOf = (dd, slot) => (L.sessions || []).find((s) => s.date === dd && s.slot === slot);
+  const avNow = await AdmitVerification.find({ batchId: b._id }).lean();
+  const byId = new Map(avNow.map((a) => [String(a.studentId), a]));
+
+  // rows to put back (seat "12A" = row 12, right; "12" = row 12, left)
+  const back = [];
+  for (const a of bk.avs || []) {
+    for (const e of a.exams || []) {
+      if (!RESTORE4.has(up(e.code))) continue;
+      const m = String(e.seat || '').match(/^(\d+)(A?)$/);
+      if (!m) throw new Error(`${a.studentId} ${e.code}: seat "${e.seat}" not understood`);
+      back.push({ a, e, row: { row: Number(m[1]), col: m[2] ? 'R' : 'L', seat: e.seat, sid: String(a.studentId), name: a.name, program: a.program,
+        batch: a.batch, course: up(e.code), time: e.slot, ...(e.section ? { section: e.section } : {}) } });
+    }
+  }
+  // free the original seats: a new lateral student sitting there moves to another free seat
+  const cap = new Map((L.venues || []).map((v) => [v.name, v]));
+  const lateral = new Set(Object.keys(LATERAL_ADD).map(String));
+  const want = new Set(back.map((x) => `${x.e.dateDisp}|${x.e.slot}|${x.e.room}|${x.row.row}|${x.row.col}`));
+  const moves = [];
+  for (const x of back) {
+    const s = sessOf(x.e.dateDisp, x.e.slot);
+    if (!s) throw new Error(`no sitting ${x.e.dateDisp} ${x.e.slot}`);
+    const rm = s.rooms.find((r) => r.name === x.e.room);
+    if (!rm) throw new Error(`room ${x.e.room} missing on ${x.e.dateDisp} ${x.e.slot}`);
+    const i = rm.rows.findIndex((r) => r.row === x.row.row && r.col === x.row.col);
+    if (i < 0) continue;
+    const occ = rm.rows[i];
+    if (occ.sid === x.row.sid && up(occ.course) === x.row.course) { x.skip = true; continue; }
+    if (!lateral.has(String(occ.sid))) throw new Error(`seat ${x.e.room} ${x.e.seat} (${x.e.dateDisp} ${x.e.slot}) is now taken by ${occ.sid}`);
+    rm.rows.splice(i, 1);
+    moves.push({ s, occ });
+  }
+  for (const x of back) {
+    if (x.skip) continue;
+    sessOf(x.e.dateDisp, x.e.slot).rooms.find((r) => r.name === x.e.room).rows.push(x.row);
+  }
+  const moved = [];
+  for (const { s, occ } of moves) {
+    const code = up(occ.course);
+    const rooms = [...s.rooms].sort((p, q) => (q.rows.some((r) => up(r.course) === code) ? 1 : 0) - (p.rows.some((r) => up(r.course) === code) ? 1 : 0));
+    let spot = null;
+    for (const rm of rooms) {
+      const v = cap.get(rm.name); if (!v) continue;
+      const nRows = v.rows || Math.ceil((v.exam_seats || 0) / 2);
+      if (rm.rows.length >= (v.exam_seats || nRows * 2)) continue;
+      const at = new Map(rm.rows.map((r) => [`${r.row}|${r.col}`, r]));
+      for (let r = 1; r <= nRows && !spot; r++) {
+        for (const col of ['L', 'R']) {
+          if (at.has(`${r}|${col}`) || want.has(`${s.date}|${s.slot}|${rm.name}|${r}|${col}`)) continue;
+          const mate = at.get(`${r}|${col === 'L' ? 'R' : 'L'}`);
+          if (mate && up(mate.course) === code) continue;
+          spot = { rm, row: r, col }; break;
+        }
+      }
+      if (spot) break;
+    }
+    if (!spot) throw new Error(`no free seat to move ${occ.sid} ${code}`);
+    const seat = spot.col === 'L' ? String(spot.row) : `${spot.row}A`;
+    spot.rm.rows.push({ ...occ, row: spot.row, col: spot.col, seat });
+    moved.push({ sid: String(occ.sid), code, date: s.date, slot: s.slot, room: spot.rm.name, seat });
+  }
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+
+  // admit-card records: the original paper entries (same token → same QR, same keys)
+  let page = Math.max(0, ...avNow.map((a) => a.cardPage || 0));
+  const ops = []; const revived = [];
+  const bySid = new Map();
+  for (const x of back) { if (!bySid.has(x.row.sid)) bySid.set(x.row.sid, []); bySid.get(x.row.sid).push(x.e); }
+  for (const [sid, list] of bySid) {
+    const cur = byId.get(sid);
+    if (!cur) throw new Error(`${sid}: admit-card record missing`);
+    const have = new Set((cur.exams || []).map((e) => `${up(e.code)}|${e.date}|${e.slot}`));
+    const exams = [...(cur.exams || []), ...list.filter((e) => !have.has(`${up(e.code)}|${e.date}|${e.slot}`))];
+    const set = { exams };
+    if (!(cur.cardPage > 0)) { page += 1; set.cardPage = page; revived.push(sid); }
+    ops.push({ updateOne: { filter: { _id: cur._id }, update: { $set: set } } });
+  }
+  for (const mv of moved) {
+    const cur = byId.get(mv.sid);
+    const exams = (cur.exams || []).map((e) => (up(e.code) === mv.code && e.dateDisp === mv.date && e.slot === mv.slot ? { ...e, room: mv.room, seat: mv.seat } : e));
+    ops.push({ updateOne: { filter: { _id: cur._id }, update: { $set: { exams } } } });
+  }
+  for (let i = 0; i < ops.length; i += 500) await AdmitVerification.bulkWrite(ops.slice(i, i + 500), { ordered: true });
+
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  await GeneratedFile.updateOne({ _id: b._id }, { $set: { 'summary.admitCards': page } });
+  return `datesheets: ${fixed.size} re-printed | ${back.filter((x) => !x.skip).length} papers restored to their original seats for ${bySid.size} students`
+    + `${revived.length ? `, cards back for ${revived.join(', ')} (same QR)` : ''} | lateral seats moved: ${moved.map((m) => `${m.sid} ${m.code} → ${m.room} ${m.seat}`).join(', ') || 'none'} | ${r.cards || page} cards re-printed`;
+}
+
+// Exam office (19 Oct): SE432 was merged with CS432 on the BS datesheet (Wed 04-Nov
+// 11:00-12:30). The 2 SE432 students move to free seats in the CS432 rooms of that sitting;
+// same card / QR (only the paper key for the new time is re-derived), nobody else moves.
+async function se432WithCs432_20261019() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-19.restore-ss108-ss118-mt129-ss216' }).lean())) throw new Error('waiting for the restore');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const admitCrypto = require('./admitCrypto');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const up = (x) => String(x || '').trim().toUpperCase();
+  const NEW = { date: '2026-11-04', dateDisp: '04-Nov-2026', day: 'Wednesday', slot: '11:00-12:30', start: '11:00', finish: '12:30' };
+  const MATES = new Set(['CS432', 'SE432']);
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const cap = new Map((L.venues || []).map((v) => [v.name, v]));
+  const dest = (L.sessions || []).find((s) => s.date === NEW.dateDisp && s.slot === NEW.slot);
+  if (!dest) throw new Error('no 04-Nov 11:00-12:30 sitting');
+  const movers = [];
+  for (const s of L.sessions || []) {
+    if (s === dest) continue;
+    for (const rm of s.rooms || []) {
+      for (let i = rm.rows.length - 1; i >= 0; i--) if (up(rm.rows[i].course) === 'SE432') { movers.push(rm.rows[i]); rm.rows.splice(i, 1); }
+    }
+    s.rooms = (s.rooms || []).filter((rm) => rm.rows.length);
+  }
+  L.sessions = (L.sessions || []).filter((s) => (s.rooms || []).length);
+  if (!movers.length) return 'SE432 already sits with CS432';
+  const moved = [];
+  for (const m of movers) {
+    let spot = null;
+    for (const pass of [0, 1]) {                       // pass 0: avoid a CS432/SE432 bench-mate
+      for (const rm of dest.rooms.filter((r) => r.rows.some((x) => MATES.has(up(x.course))))) {
+        const v = cap.get(rm.name); if (!v) continue;
+        const nRows = v.rows || Math.ceil((v.exam_seats || 0) / 2);
+        if (rm.rows.length >= (v.exam_seats || nRows * 2)) continue;
+        const at = new Map(rm.rows.map((r) => [`${r.row}|${r.col}`, r]));
+        for (let r = 1; r <= nRows && !spot; r++) {
+          for (const col of ['L', 'R']) {
+            if (at.has(`${r}|${col}`)) continue;
+            const mate = at.get(`${r}|${col === 'L' ? 'R' : 'L'}`);
+            if (mate && (up(mate.course) === 'SE432' || (pass === 0 && MATES.has(up(mate.course))))) continue;
+            spot = { rm, row: r, col }; break;
+          }
+        }
+        if (spot) break;
+      }
+      if (spot) break;
+    }
+    if (!spot) throw new Error(`no free seat in the CS432 rooms for ${m.sid}`);
+    const seat = spot.col === 'L' ? String(spot.row) : `${spot.row}A`;
+    spot.rm.rows.push({ ...m, row: spot.row, col: spot.col, seat, time: NEW.slot });
+    moved.push({ sid: String(m.sid), room: spot.rm.name, seat });
+  }
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+  for (const mv of moved) {
+    const a = await AdmitVerification.findOne({ batchId: b._id, studentId: mv.sid }).lean();
+    if (!a) throw new Error(`${mv.sid}: admit-card record missing`);
+    const exams = (a.exams || []).map((e) => (up(e.code) !== 'SE432' ? e : {
+      ...e, ...NEW, room: mv.room, seat: mv.seat, key: admitCrypto.paperKey(a.token, e.code, NEW.date, NEW.slot) }));
+    await AdmitVerification.updateOne({ _id: a._id }, { $set: { exams } });
+  }
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  return `SE432 → Wed 04-Nov 11:00-12:30 with CS432: ${moved.map((m) => `${m.sid} ${m.room} ${m.seat}`).join(', ')} | ${r.cards || ''} cards re-printed, same QR`;
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -388,6 +814,10 @@ const TASKS = [
   ['2026-10-16.card-instructions', cardInstructions20261016],
   ['2026-10-16.roster-format', rosterFormat20261016],
   ['2026-10-16.instructions-under-table', instructionsUnderTable20261016],
+  ['2026-10-19.drop-fall26-first-semester', dropFall26Courses20261019],
+  ['2026-10-19.add-lateral-students', addLateralStudents20261019],
+  ['2026-10-19.restore-ss108-ss118-mt129-ss216', restoreFourCourses20261019],
+  ['2026-10-19.se432-with-cs432', se432WithCs432_20261019],
 ];
 
 async function runOneTimeTasks() {

@@ -41,6 +41,16 @@ const layoutOf = (rec) => {
   return fs.existsSync(p) ? p : null;
 };
 
+// a hosted server may not have the batch files on its disk yet → restore them from the database
+async function ensureBatchFiles(rec) {
+  const { ensureLocal } = require('../utils/fileStore');
+  const f = cardsFileOf(rec);
+  if (!f) return;
+  const base = path.basename(f);
+  await ensureLocal(base.replace(/\.pdf$/i, '_layout.json'));
+  await ensureLocal(base);
+}
+
 // layout JSON is big — cache the per-course index by path + mtime
 const _idx = new Map();
 function courseIndex(layoutPath) {
@@ -75,6 +85,7 @@ async function batches(batchId) {
   const q = { kind: 'admit_cards', archived: { $ne: true } };
   if (batchId) q._id = batchId;
   const recs = await GeneratedFile.find(q).sort({ createdAt: -1 }).lean();
+  for (const r of recs) await ensureBatchFiles(r);
   return recs.map((r) => ({ rec: r, layout: layoutOf(r) })).filter((x) => x.layout);
 }
 
@@ -312,6 +323,7 @@ async function rosterFiles(layoutPath, code, { xlsx = false, pdf = false, byTeac
 
 /** the batch's invigilation roster PDF, always re-built in the Exam Office format */
 async function invigilationPdfOf(rec) {
+  await ensureBatchFiles(rec);
   const layout = layoutOf(rec);
   if (!layout) return null;
   return (await rosterFiles(layout, null, { pdf: true })).pdf;

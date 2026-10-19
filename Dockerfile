@@ -6,7 +6,7 @@ FROM node:20-bookworm-slim
 
 # ── System Python (for the scheduler engines) ──────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-venv python3-pip ca-certificates \
+      python3 python3-venv python3-pip ca-certificates tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 # Isolated venv so pip installs cleanly on Debian (PEP 668) and PYTHON_BIN is stable.
@@ -37,6 +37,8 @@ COPY backend ./backend
 COPY scheduler ./scheduler
 
 ENV NODE_ENV=production
+# exam times are Pakistan time (scanning window, attendance P/A, file locks)
+ENV TZ=Asia/Karachi
 
 # Run as a non-root user (Hugging Face Spaces runs containers as uid 1000; it must
 # own the app dir so the scheduler can write PDFs to scheduler/output and the admit

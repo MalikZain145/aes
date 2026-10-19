@@ -18,6 +18,10 @@ services:
         value: "*"
       - key: JWT_EXPIRES
         value: 7d
+      - key: TZ
+        value: Asia/Karachi
+      - key: ADMIT_VERIFY_SECRET
+        sync: false   # set in dashboard = the text inside backend/.admit_secret on the office PC (same QR keys)
       - key: MONGO_URI
         sync: false   # set in dashboard (Atlas SRV string incl. db name)
       - key: JWT_SECRET

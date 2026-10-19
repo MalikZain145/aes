@@ -44,7 +44,7 @@ function baseUrl() {
   return '';
 }
 
-async function resectionBatch(batchId) {
+async function resectionBatch(batchId, opts = {}) {
   const GeneratedFile = require('../models/GeneratedFile');
   const AdmitVerification = require('../models/AdmitVerification');
   const { OUTPUT_DIR, SCHEDULER_DIR, runPython, fileSize } = require('./pythonRunner');
@@ -72,7 +72,7 @@ async function resectionBatch(batchId) {
   const sample = avs.find((a) => a.heading) || avs[0];
   const t = String(sample.examType || '').toLowerCase();
   fs.writeFileSync(cfgPath, JSON.stringify({
-    mode: 'resection', layout_json: layout, students_json: studentsJson, course_sections,
+    mode: 'resection', keep_seats: !!opts.keepSeats, layout_json: layout, students_json: studentsJson, course_sections,
     student_sections: await require('./sectionPlan').studentSectionMap().catch(() => ({})),
     meta: { heading: sample.heading || '', exam_label: t ? (t.startsWith('mid') ? 'Mid Term Examination' : 'Final Term Examination') : '' },
     base_url: baseUrl(), out_json: outJson,

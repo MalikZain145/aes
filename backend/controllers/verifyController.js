@@ -19,6 +19,7 @@ const admitCrypto = require('../utils/admitCrypto');
  * different rooms never clash. Best-effort: a DB hiccup never breaks the scan.
  */
 async function markPresent(rec, todayExams) {
+  // only while the paper is being written (start → finish); never before it starts
   const active = (todayExams || []).filter((e) => e.state === 'active');
   if (!active.length) return [];
   await Promise.all(active.map((e) => Attendance.updateOne(
@@ -137,9 +138,10 @@ function computeStatus(rec) {
     (a.date || '').localeCompare(b.date || '') || (toMinutes(a.start) || 0) - (toMinutes(b.start) || 0));
   if (!exams.length) return { status: 'no_exams', today: [] };
 
-  const now = new Date();
-  const today = localDateStr(now);
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // Pakistan time, whatever zone the server runs in (a hosted server runs on UTC)
+  const clock = require('../utils/examClock').now();
+  const today = clock.date;
+  const nowMin = clock.minutes;
   const todays = exams.filter((e) => e.date === today);
   const maxDate = exams[exams.length - 1].date;
 
@@ -203,9 +205,9 @@ exports.renderVerify = async (req, res) => {
       <h2>No exams found</h2><p>No papers are recorded for this admit card.</p></div>`));
   }
 
-  const now = new Date();
-  const today = localDateStr(now);
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const clock = require('../utils/examClock').now();   // Pakistan time
+  const today = clock.date;
+  const nowMin = clock.minutes;
   const todays = exams.filter((e) => e.date === today);
   const maxDate = exams[exams.length - 1].date;
 

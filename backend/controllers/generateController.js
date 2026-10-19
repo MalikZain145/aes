@@ -1849,8 +1849,10 @@ exports.downloadFile = async (req, res) => {
     } catch (e) { console.warn('invigilation re-build:', e.message); }
   }
 
+  // not on this server's disk (hosted server / after a restart) → restore it from the database copy
+  await require('../utils/fileStore').ensureLocal(safe);
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File no longer exists on disk. Regenerate it.' });
+    return res.status(404).json({ error: 'This file is not on the server — it was made on another computer and has not been saved to the database yet. Open the system on that computer once (it uploads its files), or regenerate it here.' });
   }
 
   res.download(filePath, friendlyName(record, match), { cacheControl: false, lastModified: false, etag: false });

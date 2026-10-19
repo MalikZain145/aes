@@ -101,6 +101,9 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   // timetables, set the Exam Cell / Finance login usernames.
   // Runs in the BACKGROUND so a long task (datesheet / admit-card re-print) never
   // delays the server from starting; each task logs its own result.
+  // Generated files live in the database too (GridFS) — restore any this disk is
+  // missing (a hosted server's disk is wiped on every restart), then keep it in step.
+  try { await require('./utils/fileStore').init(); } catch (e) { console.warn('File store:', e.message); }
   require('./utils/oneTimeTasks').runOneTimeTasks().catch((e) => console.warn('One-time tasks:', e.message));
   // Every registered student gets a Student Portal login (reg no / student123):
   // created now for anyone missing, then new registration records are detected

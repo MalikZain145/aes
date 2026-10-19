@@ -47,12 +47,8 @@ function toMinutes(hhmm) {
 
 // Has the slot's finish time passed? (date 'YYYY-MM-DD', finish/slot label)
 function slotEnded(date, finish) {
-  const now = new Date();
-  const [Y, M, D] = String(date || '').split('-').map(Number);
-  if (!Y) return false;
-  const fm = toMinutes(finish);
-  const end = new Date(Y, (M || 1) - 1, D || 1, Math.floor((fm ?? 1439) / 60), (fm ?? 1439) % 60, 0);
-  return now.getTime() > end.getTime();
+  // Pakistan time, whatever zone the server runs in
+  return require('../utils/examClock').slotPhase(date, `00:00-${finish}`) === 'after';
 }
 const finishOfSlot = (slot) => String(slot || '').split('-')[1] || '';
 
@@ -252,6 +248,192 @@ exports.sheetPdf = async (req, res) => {
     res.send(Buffer.from(bytes));
   } catch (e) {
     console.error('attendance.sheetPdf:', e.message);
+    res.status(500).json({ error: 'Could not build the attendance PDF.' });
+  }
+};
+
+/* ═══════════════ Room-wise attendance files (per paper) ═══════════════
+ * Every room that has a paper shows as a strip. Inside it, one FILE per paper
+ * (course code + date + time). Before / during the paper each student is "-";
+ * a scan turns it into "P"; when the paper's time is over the rest become "A"
+ * and only then the file can be downloaded. Times are Pakistan time. */
+const clock = require('../utils/examClock');
+
+let _rc = { key: '', at: 0, rows: [] };
+async function allRoster() {
+  const ids = await currentBatchIds(null);
+  const key = ids.map(String).join(',');
+  if (_rc.key === key && Date.now() - _rc.at < 30000) return _rc.rows;
+  const docs = await AdmitVerification.find({ batchId: { $in: ids } })
+    .select('studentId name program batch createdAt exams.code exams.name exams.date exams.dateDisp exams.day exams.slot exams.room exams.seat exams.section')
+    .sort({ createdAt: -1 }).lean();
+  const seen = new Set(); const rows = [];
+  for (const d of docs) {
+    for (const e of d.exams || []) {
+      const k = `${d.studentId}|${e.code}|${e.date}|${e.slot}`;
+      if (seen.has(k)) continue;           // latest batch wins
+      seen.add(k);
+      rows.push({ studentId: d.studentId, name: d.name, program: d.program, batch: d.batch,
+        code: e.code, courseName: e.name || '', date: e.date, dateDisp: e.dateDisp || e.date, day: e.day || '',
+        slot: e.slot, room: e.room || '—', seat: e.seat || '', section: e.section || '' });
+    }
+  }
+  _rc = { key, at: Date.now(), rows };
+  return rows;
+}
+async function scanMap(match) {
+  const m = new Map();
+  for (const a of await Attendance.find(match).select('studentId code date slot scannedAt').lean()) {
+    m.set(`${a.studentId}|${a.code}|${a.date}|${a.slot}`, a.scannedAt || a.createdAt || true);
+  }
+  return m;
+}
+const phaseState = (p) => (p === 'after' ? 'final' : p === 'during' ? 'live' : 'upcoming');
+const levelOk = (level) => (r) => !level || (progIsPG(r.program) ? 'pg' : 'ug') === level;
+
+// GET /api/attendance/rooms[?date=YYYY-MM-DD][&level=ug|pg]
+exports.rooms = async (req, res) => {
+  try {
+    const level = normLevel(req.query.level);
+    const all = (await allRoster()).filter(levelOk(level));
+    const dates = new Map();
+    for (const r of all) if (!dates.has(r.date)) dates.set(r.date, { date: r.date, dateDisp: r.dateDisp, day: r.day });
+    const date = req.query.date && req.query.date !== 'all' ? String(req.query.date) : null;
+    const rows = date ? all.filter((r) => r.date === date) : all;
+    const scans = await scanMap(date ? { date } : {});
+
+    const rooms = new Map();
+    for (const r of rows) {
+      if (!rooms.has(r.room)) rooms.set(r.room, new Map());
+      const pk = `${r.date}|${r.slot}|${r.code}`;
+      const pm = rooms.get(r.room);
+      if (!pm.has(pk)) pm.set(pk, { date: r.date, dateDisp: r.dateDisp, day: r.day, slot: r.slot, code: r.code, courseName: r.courseName, total: 0, present: 0, secs: new Map() });
+      const p = pm.get(pk);
+      const hit = scans.has(`${r.studentId}|${r.code}|${r.date}|${r.slot}`);
+      p.total++;
+      if (hit) p.present++;
+      const sk = r.section || '';
+      if (!p.secs.has(sk)) p.secs.set(sk, { section: sk, total: 0, present: 0 });
+      const sc = p.secs.get(sk); sc.total++; if (hit) sc.present++;
+    }
+    const order = (a, b) => a.date.localeCompare(b.date) || (clock.toMinutes(a.slot) - clock.toMinutes(b.slot)) || a.code.localeCompare(b.code);
+    const out = [...rooms.entries()].map(([room, pm]) => {
+      const papers = [...pm.values()].map((p) => {
+        const state = phaseState(clock.slotPhase(p.date, p.slot));
+        const fin = state === 'final';
+        // a course taught in sections (A / B / C) → one attendance list per section
+        const secList = [...p.secs.values()].sort((a, b) => (a.section || '~').localeCompare(b.section || '~'));
+        const sections = secList.some((x) => x.section)
+          ? secList.map((x) => ({ ...x, absent: fin ? x.total - x.present : 0 }))
+          : [];
+        const { secs, ...rest } = p; void secs;
+        return { ...rest, sections, state, absent: fin ? p.total - p.present : 0, downloadable: fin };
+      }).sort(order);
+      const sum = (k) => papers.reduce((n, p) => n + p[k], 0);
+      const state = papers.some((p) => p.state === 'live') ? 'live' : papers.every((p) => p.state === 'final') ? 'final' : 'upcoming';
+      return { room, papers, total: sum('total'), present: sum('present'), absent: sum('absent'), state,
+        sittings: new Set(papers.map((p) => `${p.date}|${p.slot}`)).size };
+    }).sort((a, b) => String(a.room).localeCompare(String(b.room), undefined, { numeric: true }));
+    const now = clock.now();
+    res.json({ now: { ...now, tz: clock.TZ }, dates: [...dates.values()].sort((a, b) => a.date.localeCompare(b.date)), date: date || 'all', rooms: out });
+  } catch (e) {
+    console.error('attendance.rooms:', e.message);
+    res.status(500).json({ error: 'Could not load the exam rooms.' });
+  }
+};
+
+async function paperSheet(q) {
+  const { date, slot, room, code } = q;
+  const level = normLevel(q.level);
+  const section = q.section == null ? null : String(q.section);   // '' = students with no section
+  const rows = (await allRoster()).filter((r) => r.date === date && r.slot === slot && r.room === room && r.code === code)
+    .filter((r) => section === null || (r.section || '') === section).filter(levelOk(level));
+  const scans = await scanMap({ date, slot, code });
+  const phase = clock.slotPhase(date, slot);
+  const state = phaseState(phase);
+  const out = rows.map((r) => {
+    const at = scans.get(`${r.studentId}|${r.code}|${r.date}|${r.slot}`) || null;
+    return { seat: r.seat, studentId: r.studentId, name: r.name, program: r.program, batch: r.batch, section: r.section,
+      mark: at ? 'P' : (state === 'final' ? 'A' : '-'), scannedAt: at };
+  }).sort((a, b) => seatKey(a.seat) - seatKey(b.seat) || String(a.seat).localeCompare(String(b.seat)));
+  const present = out.filter((r) => r.mark === 'P').length;
+  const first = rows[0] || {};
+  return { date, dateDisp: first.dateDisp || date, day: first.day || '', slot, room, code, courseName: first.courseName || '',
+    section, state, downloadable: state === 'final', rows: out,
+    counts: { total: out.length, present, absent: state === 'final' ? out.length - present : 0, notYet: state === 'final' ? 0 : out.length - present } };
+}
+
+// GET /api/attendance/paper?date=&slot=&room=&code=
+exports.paper = async (req, res) => {
+  try {
+    const { date, slot, room, code } = req.query;
+    if (!date || !slot || !room || !code) return res.status(400).json({ error: 'date, slot, room and code are required.' });
+    res.json(await paperSheet(req.query));
+  } catch (e) {
+    console.error('attendance.paper:', e.message);
+    res.status(500).json({ error: 'Could not load the attendance file.' });
+  }
+};
+
+// GET /api/attendance/paper.pdf?date=&slot=&room=&code=   (only after the paper's time is over)
+exports.paperPdf = async (req, res) => {
+  try {
+    const { date, slot, room, code } = req.query;
+    if (!date || !slot || !room || !code) return res.status(400).json({ error: 'date, slot, room and code are required.' });
+    const sh = await paperSheet(req.query);
+    if (!sh.rows.length) return res.status(404).json({ error: 'No students are seated for this paper in this room.' });
+    if (!sh.downloadable) {
+      const fm = clock.toMinutes(String(slot).split('-')[1] || '');
+      const end = fm == null ? '' : `${((Math.floor(fm / 60) + 11) % 12) + 1}:${String(fm % 60).padStart(2, '0')} ${fm >= 720 ? 'PM' : 'AM'}`;
+      return res.status(409).json({ error: `${code}${sh.section ? ` Section ${sh.section}` : ''} attendance (${room}) can be downloaded after the paper ends — ${sh.dateDisp} at ${end}.` });
+    }
+    const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const GREEN = rgb(0.06, 0.32, 0.18); const GREY = rgb(0.36, 0.42, 0.39);
+    const RED = rgb(0.6, 0.1, 0.14); const OK = rgb(0.05, 0.42, 0.24); const LINE = rgb(0.82, 0.88, 0.85);
+    const A4 = [595.28, 841.89]; const M = 36; const rowH = 17; const perPage = 38;
+    const fit = (t, f, size, w) => { let s = String(t || ''); while (s && f.widthOfTextAtSize(s, size) > w) s = s.slice(0, -1); return s; };
+    const pages = Math.max(1, Math.ceil(sh.rows.length / perPage));
+    const hasSec = sh.rows.some((r) => r.section);
+    const cols = hasSec
+      ? [['Seat', 0, 40], ['Reg No', 40, 55], ['Student Name', 95, 165], ['Degree / Batch', 260, 170], ['Sec', 430, 30], ['Attendance', 460, 63]]
+      : [['Seat', 0, 40], ['Reg No', 40, 55], ['Student Name', 95, 175], ['Degree / Batch', 270, 190], ['Attendance', 460, 63]];
+    for (let pi = 0; pi < pages; pi++) {
+      const pg = pdf.addPage(A4);
+      let y = A4[1] - M;
+      pg.drawText('ABASYN UNIVERSITY ISLAMABAD CAMPUS', { x: M, y, size: 13, font: bold, color: GREEN }); y -= 15;
+      pg.drawText('Examination Attendance', { x: M, y, size: 10.5, font: bold, color: GREY }); y -= 18;
+      pg.drawText(fit(`${sh.code} — ${sh.courseName}${sh.section ? `   ·   Section ${sh.section}` : ''}`, bold, 11, A4[0] - 2 * M), { x: M, y, size: 11, font: bold }); y -= 14;
+      pg.drawText(`Room: ${sh.room}     Date: ${sh.day ? sh.day + ', ' : ''}${sh.dateDisp}     Time: ${sh.slot}`, { x: M, y, size: 9.5, font, color: GREY }); y -= 13;
+      pg.drawText(`Present (P): ${sh.counts.present}     Absent (A): ${sh.counts.absent}     Total: ${sh.counts.total}     Page ${pi + 1} of ${pages}`, { x: M, y, size: 9.5, font: bold, color: GREEN }); y -= 16;
+      for (const [h, x] of cols) pg.drawText(h, { x: M + x + 2, y, size: 8.8, font: bold, color: GREEN });
+      y -= 5; pg.drawLine({ start: { x: M, y }, end: { x: A4[0] - M, y }, thickness: 0.9, color: GREEN }); y -= rowH - 4;
+      for (const r of sh.rows.slice(pi * perPage, (pi + 1) * perPage)) {
+        const vals = hasSec
+          ? [r.seat, r.studentId, r.name, r.batch || r.program, r.section || '', r.mark]
+          : [r.seat, r.studentId, r.name, r.batch || r.program, r.mark];
+        vals.forEach((v, k) => {
+          const [, x, w] = cols[k];
+          const isMark = k === vals.length - 1;
+          pg.drawText(fit(v, isMark ? bold : font, isMark ? 10 : 8.5, w - 4), {
+            x: M + x + 2 + (isMark ? 20 : 0), y, size: isMark ? 10 : 8.5, font: isMark || k === 0 ? bold : font,
+            color: isMark ? (v === 'P' ? OK : RED) : (k === 0 ? GREEN : rgb(0, 0, 0)) });
+        });
+        pg.drawLine({ start: { x: M, y: y - 5 }, end: { x: A4[0] - M, y: y - 5 }, thickness: 0.3, color: LINE });
+        y -= rowH;
+      }
+      pg.drawText(`P = present (admit card scanned during the paper)   A = absent   ·   generated ${(() => { const n = clock.now(); return `${n.date} ${String(Math.floor(n.minutes / 60)).padStart(2, '0')}:${String(n.minutes % 60).padStart(2, '0')}`; })()} (PKT)`, { x: M, y: 24, size: 7.5, font, color: GREY });
+    }
+    const bytes = await pdf.save();
+    const safe = `Attendance_${code}${sh.section ? `-${sh.section}` : ''}_${room}_${date}_${String(slot).replace(/[^0-9]/g, '')}`.replace(/[^A-Za-z0-9_-]+/g, '') + '.pdf';
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safe}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(Buffer.from(bytes));
+  } catch (e) {
+    console.error('attendance.paperPdf:', e.message);
     res.status(500).json({ error: 'Could not build the attendance PDF.' });
   }
 };

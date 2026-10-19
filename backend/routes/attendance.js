@@ -12,5 +12,8 @@ router.use(requireRole('admin'));   // Exam Cell only
 router.get('/sessions', ctrl.sessions);         // list (date, slot) with room breakdown + counts
 router.get('/sheet', ctrl.sheet);               // live/final sheet for a (date, slot[, room])
 router.get('/sheet.pdf', ctrl.sheetPdf);        // downloadable PDF (room optional)
+router.get('/rooms', ctrl.rooms);               // every room with papers → its per-paper files
+router.get('/paper', ctrl.paper);               // one paper in one room: - / P / A per student
+router.get('/paper.pdf', ctrl.paperPdf);        // that file — downloadable once the paper's time is over
 
 module.exports = router;

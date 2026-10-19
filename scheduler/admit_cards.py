@@ -2014,7 +2014,8 @@ def resection(config: dict) -> dict:
                 by_code[str(e["code"]).upper()].add(str(st["sid"]))
     sec_of = sections_for(by_code, config, batch_of)
     sessions = L.get("sessions") or []
-    moved = apply_section_seating(sessions, sec_of) if sec_of else 0
+    # keep_seats: only re-print — every seat stays exactly where it was issued
+    moved = apply_section_seating(sessions, sec_of) if (sec_of and not config.get("keep_seats")) else 0
     # new seat of every (sid, course, date)
     pos = {}
     for sess in sessions:

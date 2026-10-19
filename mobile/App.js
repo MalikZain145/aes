@@ -13,7 +13,7 @@ import { API_BASE, VERIFY_PATH } from './config';
 const clean = (b) => String(b || '').trim().replace(/\/+$/, '');
 const SERVER = clean(API_BASE);
 
-async function pingServer(timeout = 6000) {
+async function pingServer(timeout = 45000) {
   try {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), timeout);
@@ -80,24 +80,18 @@ export default function App() {
     setMode('scan');
   }, []);
 
-  const onScan = useCallback(async ({ data }) => {
-    if (lock.current) return;
-    lock.current = true;
-    const parsed = parseQR(data);
-    if (!parsed) {
-      // Not an Abasyn admit-card QR at all (random / fake QR with no valid token).
-      setResult({ type: 'not_student' });
-      setMode('result');
-      return;
-    }
+  const lastToken = useRef(null);
+
+  const verify = useCallback(async (token) => {
+    lastToken.current = token;
     setMode('loading');
 
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 12000);
+      const timer = setTimeout(() => ctrl.abort(), 45000);   // a sleeping hosted server needs ~30-50 s to wake
       let res = null;
       try {
-        res = await fetch(`${SERVER}/api/verify/${encodeURIComponent(parsed.token)}`, { signal: ctrl.signal });
+        res = await fetch(`${SERVER}/api/verify/${encodeURIComponent(token)}`, { signal: ctrl.signal });
       } catch { res = null; }
       clearTimeout(timer);
       setOnline(!!res);
@@ -120,6 +114,26 @@ export default function App() {
     setMode('result');
   }, []);
 
+  const onScan = useCallback(async ({ data }) => {
+    if (lock.current) return;
+    lock.current = true;
+    const parsed = parseQR(data);
+    if (!parsed) {
+      // Not an Abasyn admit-card QR at all (random / fake QR with no valid token).
+      lastToken.current = null;
+      setResult({ type: 'not_student' });
+      setMode('result');
+      return;
+    }
+    await verify(parsed.token);
+  }, [verify]);
+
+  // try the SAME card again (e.g. the server was waking up / the network dropped)
+  const retry = useCallback(() => {
+    if (lastToken.current) verify(lastToken.current);
+    else startScan();
+  }, [verify, startScan]);
+
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
@@ -127,6 +141,19 @@ export default function App() {
         <Text style={styles.hTitle}>ABASYN UNIVERSITY</Text>
         <Text style={styles.hSub}>Examination System — Admit Card Scanner</Text>
       </View>
+
+      {/* Server status (fixed server from config.js — not editable on the phone) */}
+      {mode !== 'loading' && (
+        <View style={styles.srvBar}>
+          <View style={[styles.srvDot, { backgroundColor: online === null ? '#f0c36d' : online ? '#4ade80' : '#f87171' }]} />
+          <Text style={styles.srvLabel} numberOfLines={1}>
+            {online === null ? 'Connecting to exam server…' : online ? 'Connected to exam server' : 'Exam server not reachable'}
+          </Text>
+          {online === false && (
+            <TouchableOpacity style={styles.srvBtn} onPress={check}><Text style={styles.srvBtnT}>Retry</Text></TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {mode === 'scan' && (
         <ScannerView permission={permission} requestPermission={requestPermission} onScan={onScan} />
@@ -138,21 +165,9 @@ export default function App() {
         </View>
       )}
       {mode === 'result' && (
-        <ResultView result={result} onNext={startScan} />
+        <ResultView result={result} onNext={startScan} onRetry={retry} />
       )}
 
-      {/* Server status (fixed server from config.js — not editable on the phone) */}
-      {mode === 'scan' && (
-        <View style={styles.srvBar}>
-          <View style={[styles.srvDot, { backgroundColor: online === null ? '#f0c36d' : online ? '#4ade80' : '#f87171' }]} />
-          <Text style={styles.srvLabel} numberOfLines={1}>
-            {online === null ? 'Connecting to exam server…' : online ? 'Connected to exam server' : 'Exam server not reachable'}
-          </Text>
-          {online === false && (
-            <TouchableOpacity style={styles.srvBtn} onPress={check}><Text style={styles.srvBtnT}>Retry</Text></TouchableOpacity>
-          )}
-        </View>
-      )}
     </View>
   );
 }
@@ -186,9 +201,23 @@ function ScannerView({ permission, requestPermission, onScan }) {
   );
 }
 
-function ResultView({ result, onNext }) {
+function ResultView({ result, onNext, onRetry }) {
+  const failed = result?.type === 'error';
+  const Buttons = ({ top }) => (
+    <View style={[styles.btnRow, top ? styles.btnRowTop : styles.btnRowBottom]}>
+      {failed && (
+        <TouchableOpacity style={[styles.actBtn, styles.retryBtn]} onPress={onRetry}>
+          <Text style={styles.nextText}>↻  Retry</Text>
+        </TouchableOpacity>
+      )}
+      <TouchableOpacity style={[styles.actBtn, styles.nextBtn]} onPress={onNext}>
+        <Text style={styles.nextText}>⟳  Scan Next</Text>
+      </TouchableOpacity>
+    </View>
+  );
   return (
     <View style={styles.resultRoot}>
+      <Buttons top />
       <ScrollView contentContainerStyle={styles.resultScroll}>
         {result?.type === 'valid' && <ValidResult data={result.data} />}
         {result?.type === 'record_not_found' && (
@@ -203,9 +232,7 @@ function ResultView({ result, onNext }) {
           <Banner tone="warn" emoji="⚠️" title="Could not verify" sub={result.message} />
         )}
       </ScrollView>
-      <TouchableOpacity style={styles.nextBtn} onPress={onNext}>
-        <Text style={styles.nextText}>⟳  Scan Next</Text>
-      </TouchableOpacity>
+      <Buttons />
     </View>
   );
 }
@@ -294,7 +321,7 @@ const styles = StyleSheet.create({
   srvBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 12, backgroundColor: '#0f5132' },
   srvDot: { width: 9, height: 9, borderRadius: 5 },
   srvLabel: { flex: 1, color: '#daf0e4', fontSize: 13, fontWeight: '700' },
-  srvBtn: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
+  srvBtn: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 16, paddingVertical: 9 },
   srvBtnT: { color: '#fff', fontWeight: '800', fontSize: 12 },
   header: { paddingTop: Platform.OS === 'ios' ? 58 : 40, paddingBottom: 14, paddingHorizontal: 18,
     backgroundColor: GREEN, alignItems: 'center' },
@@ -313,7 +340,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 7, borderRadius: 999, overflow: 'hidden' },
 
   resultRoot: { flex: 1 },
-  resultScroll: { padding: 16, paddingBottom: 90 },
+  resultScroll: { padding: 16, paddingBottom: 24 },
+  btnRow: { flexDirection: 'row', gap: 10, paddingHorizontal: 16 },
+  btnRowTop: { paddingTop: 12, paddingBottom: 2 },
+  // stays clear of the phone's gesture / button navigation bar on every model
+  btnRowBottom: { paddingTop: 8, paddingBottom: Platform.OS === 'android' ? 44 : 30 },
+  actBtn: { flex: 1, borderRadius: 999, paddingVertical: 14, alignItems: 'center' },
+  retryBtn: { backgroundColor: '#b26a00' },
   stuCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 14,
     shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 10, elevation: 2 },
   stuName: { fontSize: 20, fontWeight: '800', color: '#12261c' },
@@ -338,8 +371,7 @@ const styles = StyleSheet.create({
   bannerTitle: { fontSize: 20, fontWeight: '800', marginTop: 8 },
   bannerSub: { fontSize: 13.5, textAlign: 'center', marginTop: 6, lineHeight: 19 },
 
-  nextBtn: { position: 'absolute', left: 16, right: 16, bottom: 20, backgroundColor: GREEN2,
-    borderRadius: 999, paddingVertical: 15, alignItems: 'center' },
+  nextBtn: { backgroundColor: GREEN2 },
   nextText: { color: '#fff', fontSize: 16, fontWeight: '800' },
 
   btn: { backgroundColor: GREEN2, borderRadius: 999, paddingVertical: 13, paddingHorizontal: 22 },
