@@ -792,6 +792,195 @@ async function se432WithCs432_20261019() {
   return `SE432 → Wed 04-Nov 11:00-12:30 with CS432: ${moved.map((m) => `${m.sid} ${m.room} ${m.seat}`).join(', ')} | ${r.cards || ''} cards re-printed, same QR`;
 }
 
+// Exam office (20 Oct): 7319 Alina Imdad (BS Computer Science) — one course, CS412 Natural
+// Language Processing, Section A. Added to the registrations and to the ISSUED batch: a free seat
+// in the room where BS Section A writes CS412, a new card appended at the end (her own QR);
+// nobody else moves, every other QR stays the same.
+async function addAlina7319_20261020() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-19.se432-with-cs432' }).lean())) throw new Error('waiting for the SE432 move');
+  const crypto = require('crypto');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const StudentRegistration = require('../models/StudentRegistration');
+  const admitCrypto = require('./admitCrypto');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const up = (x) => String(x || '').trim().toUpperCase();
+  const SID = '7319'; const CODE = 'CS412'; const SEC = 'A';
+
+  const reg0 = await StudentRegistration.findOne({ studentId: SID }).lean();
+  const name = (reg0 && reg0.name) || 'Alina Imdad';
+  const program = (reg0 && reg0.program) || 'BS Computer Science';
+  const batchName = (reg0 && reg0.batch) || program;
+  await StudentRegistration.updateOne({ studentId: SID },
+    { $set: { name, program, batch: batchName }, $addToSet: { courses: CODE } }, { upsert: true });
+  await require('./sectionPlan').setSectionOverrides({ [`${SID}|${CODE}`]: SEC });
+
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  const avs = await AdmitVerification.find({ batchId: b._id }).lean();
+  if (avs.some((a) => String(a.studentId) === SID && (a.exams || []).length)) return `${SID} already has a card`;
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const cap = new Map((L.venues || []).map((v) => [v.name, v]));
+
+  // the paper's sitting + its template exam entry, from a BS Section-A student already carded for it
+  const tmpl = avs.flatMap((a) => (a.exams || []).map((e) => ({ a, e })))
+    .find((x) => up(x.e.code) === CODE && (x.e.section || '') === SEC && /^BS /i.test(x.a.program || ''));
+  if (!tmpl) throw new Error(`no BS ${CODE}-${SEC} paper in the issued cards`);
+  const E = tmpl.e;
+  const sess = (L.sessions || []).find((s) => s.date === E.dateDisp && s.slot === E.slot);
+  if (!sess) throw new Error(`no sitting ${E.dateDisp} ${E.slot}`);
+  // seat search: the BS Section-A room first (a bench-mate of another paper if possible,
+  // else the last free seat there), then other rooms writing CS412, then any room of the sitting
+  const findSeat = (rm, avoidSame) => {
+    const v = cap.get(rm.name); if (!v) return null;
+    const nRows = v.rows || Math.ceil((v.exam_seats || 0) / 2);
+    if (rm.rows.length >= (v.exam_seats || nRows * 2)) return null;
+    const at = new Map(rm.rows.map((r) => [`${r.row}|${r.col}`, r]));
+    for (let r = 1; r <= nRows; r++) {
+      for (const col of ['L', 'R']) {
+        if (at.has(`${r}|${col}`)) continue;
+        const mate = at.get(`${r}|${col === 'L' ? 'R' : 'L'}`);
+        const same = !!(mate && up(mate.course) === CODE);
+        if (avoidSame && same) continue;
+        return { rm, row: r, col, same };
+      }
+    }
+    return null;
+  };
+  const home = sess.rooms.find((rm) => rm.name === E.room);
+  const others = sess.rooms.filter((rm) => rm !== home);
+  const withCode = others.filter((rm) => rm.rows.some((r) => up(r.course) === CODE));
+  let spot = (home && (findSeat(home, true) || findSeat(home, false)));
+  for (const rm of withCode) { if (spot) break; spot = findSeat(rm, true); }
+  for (const rm of others) { if (spot) break; spot = findSeat(rm, true) || findSeat(rm, false); }
+  const sharedBench = !!(spot && spot.same);
+  if (!spot) throw new Error(`no free seat for ${SID} on ${E.dateDisp} ${E.slot}`);
+  const seat = spot.col === 'L' ? String(spot.row) : `${spot.row}A`;
+  spot.rm.rows.push({ row: spot.row, col: spot.col, seat, sid: SID, name, program, batch: batchName, course: CODE, time: E.slot, section: SEC });
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+
+  const qid = crypto.randomBytes(8).toString('hex');
+  const token = qid + admitCrypto.tokenSig(qid);
+  const page = Math.max(0, ...avs.map((a) => a.cardPage || 0)) + 1;
+  const sample = tmpl.a;
+  const exam = { code: CODE, name: E.name, teacher: E.teacher || '', date: E.date, dateDisp: E.dateDisp, day: E.day, slot: E.slot,
+    start: E.start, finish: E.finish, room: spot.rm.name, seat, section: SEC, key: admitCrypto.paperKey(token, CODE, E.date, E.slot) };
+  const old = avs.find((a) => String(a.studentId) === SID);
+  if (old) await AdmitVerification.updateOne({ _id: old._id }, { $set: { exams: [exam], cardPage: page, name, program, batch: batchName } });
+  else {
+    await AdmitVerification.create({ token, batchId: b._id, studentId: SID, name, program, batch: batchName, cardPage: page, feeStatus: 'Unpaid',
+      heading: sample.heading, examType: sample.examType, semester: sample.semester, year: sample.year, exams: [exam] });
+  }
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  await GeneratedFile.updateOne({ _id: b._id }, { $set: { 'summary.admitCards': page } });
+  return `${SID} ${name}: ${CODE}-${SEC} ${E.dateDisp} ${E.slot} → ${spot.rm.name} seat ${seat}${sharedBench ? ' (room full — only seat left, next to a CS412 student)' : ''}; card page ${page}, own QR | ${r.cards || page} cards re-printed, nobody else moved`;
+}
+
+// Add one student to the ISSUED batch for the given papers: each paper keeps its datesheet sitting,
+// goes to a free seat (same room / section as that paper first, never beside the same paper if
+// avoidable), a new card is appended at the end with the student's own QR; nobody else moves.
+async function addStudentToBatch({ sid, name, program, batch, papers }) {
+  const crypto = require('crypto');
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const StudentRegistration = require('../models/StudentRegistration');
+  const admitCrypto = require('./admitCrypto');
+  const { OUTPUT_DIR } = require('./pythonRunner');
+  const up = (x) => String(x || '').trim().toUpperCase();
+  sid = String(sid);
+
+  const reg0 = await StudentRegistration.findOne({ studentId: sid }).lean();
+  name = (reg0 && reg0.name) || name; program = (reg0 && reg0.program) || program; batch = (reg0 && reg0.batch) || batch || program;
+  await StudentRegistration.updateOne({ studentId: sid },
+    { $set: { name, program, batch }, $addToSet: { courses: { $each: papers.map((p) => up(p.code)) } } }, { upsert: true });
+
+  const b = await GeneratedFile.findOne({ kind: 'admit_cards', archived: { $ne: true } }).sort({ createdAt: -1 });
+  const avs = await AdmitVerification.find({ batchId: b._id }).lean();
+  const mine = avs.find((a) => String(a.studentId) === sid);
+  if (mine && (mine.exams || []).length) return `${sid} already has a card`;
+  const cards = (b.files || []).find((f) => /admit cards/i.test(f.label || ''));
+  const layoutPath = path.join(OUTPUT_DIR, path.basename(cards.filename).replace(/\.pdf$/i, '_layout.json'));
+  const L = JSON.parse(fs.readFileSync(layoutPath, 'utf-8'));
+  const cap = new Map((L.venues || []).map((v) => [v.name, v]));
+  const findSeat = (rm, code, avoidSame) => {
+    const v = cap.get(rm.name); if (!v) return null;
+    const nRows = v.rows || Math.ceil((v.exam_seats || 0) / 2);
+    if (rm.rows.length >= (v.exam_seats || nRows * 2)) return null;
+    const at = new Map(rm.rows.map((r) => [`${r.row}|${r.col}`, r]));
+    for (let r = 1; r <= nRows; r++) {
+      for (const col of ['L', 'R']) {
+        if (at.has(`${r}|${col}`)) continue;
+        const mate = at.get(`${r}|${col === 'L' ? 'R' : 'L'}`);
+        const same = !!(mate && up(mate.course) === code);
+        if (avoidSame && same) continue;
+        return { rm, row: r, col, same };
+      }
+    }
+    return null;
+  };
+
+  const exams = []; const notes = []; const skipped = [];
+  const taken = new Set();
+  for (const p of papers) {
+    const code = up(p.code);
+    const all = avs.flatMap((a) => (a.exams || []).map((e) => ({ a, e }))).filter((x) => up(x.e.code) === code);
+    if (!all.length) { skipped.push(code); continue; }                     // no paper in the mids
+    const hasSec = all.some((x) => x.e.section);
+    const sec = hasSec ? up(p.section || '') : '';
+    const t = (sec && all.find((x) => (x.e.section || '') === sec)) || all.find((x) => !sec || !x.e.section) || all[0];
+    const E = t.e;
+    if (taken.has(`${E.date}|${E.slot}`)) notes.push(`${code} clashes with another of her papers`);
+    taken.add(`${E.date}|${E.slot}`);
+    const sess = (L.sessions || []).find((s) => s.date === E.dateDisp && s.slot === E.slot);
+    if (!sess) throw new Error(`${code}: no sitting ${E.dateDisp} ${E.slot}`);
+    const rooms = sess.rooms.filter((rm) => rm.rows.some((r) => up(r.course) === code && (!sec || (r.section || '') === sec)));
+    const rest = sess.rooms.filter((rm) => !rooms.includes(rm));
+    let spot = null;
+    for (const rm of rooms) { spot = spot || findSeat(rm, code, true); }
+    for (const rm of rest) { spot = spot || findSeat(rm, code, true); }
+    for (const rm of rooms) { spot = spot || findSeat(rm, code, false); }
+    if (!spot) throw new Error(`${code}: no free seat on ${E.dateDisp} ${E.slot}`);
+    const seat = spot.col === 'L' ? String(spot.row) : `${spot.row}A`;
+    spot.rm.rows.push({ row: spot.row, col: spot.col, seat, sid, name, program, batch, course: code, time: E.slot, ...(sec ? { section: sec } : {}) });
+    if (sec) await require('./sectionPlan').setSectionOverrides({ [`${sid}|${code}`]: sec });
+    exams.push({ code, name: E.name, teacher: E.teacher || '', date: E.date, dateDisp: E.dateDisp, day: E.day, slot: E.slot,
+      start: E.start, finish: E.finish, room: spot.rm.name, seat, section: sec });
+    notes.push(`${code} ${E.dateDisp} ${E.slot} → ${spot.rm.name} ${seat}${sec ? ` (Sec ${sec})` : ''}${spot.same ? ' [beside same paper]' : ''}`);
+  }
+  if (!exams.length) return `${sid}: none of the papers is in the mids (${skipped.join(', ')})`;
+  const tmp = `${layoutPath}.tmp`; fs.writeFileSync(tmp, JSON.stringify(L)); fs.renameSync(tmp, layoutPath);
+  const qid = crypto.randomBytes(8).toString('hex');
+  const token = (mine && mine.token) || (qid + admitCrypto.tokenSig(qid));
+  const page = Math.max(0, ...avs.map((a) => a.cardPage || 0)) + 1;
+  const keyed = exams.map((e) => ({ ...e, key: admitCrypto.paperKey(token, e.code, e.date, e.slot) }));
+  const sample = avs.find((a) => a.heading) || avs[0];
+  if (mine) await AdmitVerification.updateOne({ _id: mine._id }, { $set: { exams: keyed, cardPage: page, name, program, batch } });
+  else await AdmitVerification.create({ token, batchId: b._id, studentId: sid, name, program, batch, cardPage: page, feeStatus: FEE_VERIFIED,
+    heading: sample.heading, examType: sample.examType, semester: sample.semester, year: sample.year, exams: keyed });
+  const r = await require('./sections').resectionBatch(b._id, { keepSeats: true });
+  await GeneratedFile.updateOne({ _id: b._id }, { $set: { 'summary.admitCards': page } });
+  return `${sid} ${name}: card page ${page}, own QR | ${notes.join(' | ')}${skipped.length ? ` | no mid paper (left out): ${skipped.join(', ')}` : ''} | ${r.cards || page} cards re-printed, nobody else moved`;
+}
+
+// Exam office (21 Oct): 11652 Eman Ghouri (Fall 2026, DPT) — her courses, Section A.
+async function addEman11652_20261021() {
+  if (!(await Setting.findOne({ key: 'once:2026-10-20.add-7319-cs412-a' }).lean())) throw new Error('waiting for 7319');
+  return addStudentToBatch({ sid: '11652', name: 'Eman Ghouri', program: 'Doctor of Physical Therapy', batch: 'Doctor of Physical Therapy Fall 2026',
+    papers: ['DP203', 'DP204', 'DP201', 'MT210', 'SS121', 'SS130', 'DP208'].map((code) => ({ code, section: 'A' })) });
+}
+
+// Exam office (22 Oct): fees were checked by hand — every admit card now shows
+// "Paid (Verified Manually)" on a scan (app + web). Only the fee text changes:
+// QR tokens, papers, rooms and seats are untouched.
+const FEE_VERIFIED = 'Paid (Verified Manually)';
+async function feePaidManual20261022() {
+  const AdmitVerification = require('../models/AdmitVerification');
+  const r = await AdmitVerification.updateMany({ feeStatus: { $ne: FEE_VERIFIED } }, { $set: { feeStatus: FEE_VERIFIED } });
+  const n = r.modifiedCount != null ? r.modifiedCount : r.nModified;
+  return `${n} admit card(s) set to "${FEE_VERIFIED}"`;
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -818,10 +1007,25 @@ const TASKS = [
   ['2026-10-19.add-lateral-students', addLateralStudents20261019],
   ['2026-10-19.restore-ss108-ss118-mt129-ss216', restoreFourCourses20261019],
   ['2026-10-19.se432-with-cs432', se432WithCs432_20261019],
+  ['2026-10-20.add-7319-cs412-a', addAlina7319_20261020],
+  ['2026-10-22.fee-paid-verified-manually', feePaidManual20261022],
+  // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
+
+// ONE_TIME_TASKS (env) — which tasks this server may run:
+//   unset / 'all' → every pending task (the office PC)
+//   'off'         → none
+//   'key1,key2'   → only these keys (e.g. a hosted server sharing a live database)
+function allowedTask(key) {
+  const v = String(process.env.ONE_TIME_TASKS || 'all').trim();
+  if (!v || v.toLowerCase() === 'all') return true;
+  if (v.toLowerCase() === 'off') return false;
+  return v.split(',').map((x) => x.trim()).includes(key);
+}
 
 async function runOneTimeTasks() {
   for (const [key, fn] of TASKS) {
+    if (!allowedTask(key)) continue;
     const done = await Setting.findOne({ key: `once:${key}` }).lean();
     if (done) continue;
     try {
