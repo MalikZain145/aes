@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
  *         'finance'  → Finance Office (admit-card generation + fee-gated email)
  *         'faculty'  → Faculty (advisor / HoD review of registration forms)
  *         'student'  → Student (digital course-registration & add/drop forms)
+ *         'affairs'  → Office of Student Affairs (digital student ID cards)
  *
  * `username` is what you sign in with: an email for staff, the registration
  * number (lower-cased) for students. Profile fields are role-dependent and
@@ -14,7 +15,7 @@ const bcrypt = require('bcryptjs');
  */
 const userSchema = new mongoose.Schema(
   {
-    role: { type: String, required: true, enum: ['admin', 'finance', 'faculty', 'student'], index: true },
+    role: { type: String, required: true, enum: ['admin', 'finance', 'faculty', 'student', 'affairs'], index: true },
     username: { type: String, required: true, unique: true, trim: true, lowercase: true },
     passwordHash: { type: String, required: true },
 

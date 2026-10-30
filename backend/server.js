@@ -59,6 +59,7 @@ app.use('/api/faculty', require('./routes/faculty'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/archive', require('./routes/archive'));
+app.use('/api/affairs', require('./routes/affairs'));   // Office of Student Affairs — digital ID cards (+ public /scan)
 
 // ── Public QR verification (no auth) ────────────────────────────────────────
 const _verify = require('./controllers/verifyController');
@@ -97,6 +98,8 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_sch
   // makes a fresh deploy usable immediately — data is then imported in-app. Existing
   // databases are untouched (it only runs when NO admin exists).
   try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
+  // Office of Student Affairs login (created once if missing; never reset afterwards).
+  try { await ensureAffairsAccount(); } catch (e) { console.warn('Student Affairs login:', e.message); }
   // One-time maintenance (each runs once per database): remove the generated class
   // timetables, set the Exam Cell / Finance login usernames.
   // Runs in the BACKGROUND so a long task (datesheet / admit-card re-print) never
@@ -182,6 +185,18 @@ async function seedStaffIfEmpty() {
     await u.save();
   }
   console.log(`✓ Seeded ${accounts.length} staff accounts on fresh DB (admin: "${accounts[0].username}")`);
+}
+
+// Office of Student Affairs login — studentaffairs@abasynisb.edu.pk. Created only when
+// it does not exist yet; an existing account (and any password set on it) is left as-is.
+async function ensureAffairsAccount() {
+  const User = require('./models/User');
+  const username = 'studentaffairs@abasynisb.edu.pk';
+  if (await User.exists({ username })) return;
+  const u = new User({ role: 'affairs', username, name: 'Student Affairs', email: username, mustChangePassword: false });
+  await u.setPassword(process.env.AFFAIRS_PASSWORD || 'affairs123', { fast: true });
+  await u.save();
+  console.log(`✓ Student Affairs login created ("${username}")`);
 }
 
 // On Windows, the phone can only reach the server if the firewall lets port 5000

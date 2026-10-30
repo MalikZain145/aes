@@ -2,12 +2,14 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   UserCheck, RefreshCw, FileText, DoorOpen, ChevronRight, Users, CheckCircle2, XCircle, Clock, Radio,
-  Lock, Download, Eye, X, CalendarDays,
+  Lock, Download, Eye, X, CalendarDays, UserPlus, FileSpreadsheet, Trash2,
 } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { downloadFile } from '../api/download';
 import { useToast } from '../context/ToastContext';
-import { PageHeader, Loader, EmptyState } from '../components/ui';
+import { PageHeader, Loader, EmptyState, Modal } from '../components/ui';
+import { useAuth } from '../context/AuthContext';
+import { downloadAbsentees } from './attendance/absenteesExcel';
 import ScrollX from '../components/ScrollX';
 
 /* Exam Attendance — every room that has a paper is a strip. Open a room to see one
@@ -61,6 +63,9 @@ export default function Attendance() {
   const [sheet, setSheet] = useState(null);         // the open paper file
   const [secFor, setSecFor] = useState(null);       // paper whose sections (A/B/C) are shown
   const [busy, setBusy] = useState('');
+  const [addOpen, setAddOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const { admin } = useAuth();
   const sheetRef = useRef(null);
 
   const load = useCallback(async (quiet) => {
@@ -112,6 +117,37 @@ export default function Attendance() {
     } finally { setTimeout(() => setBusy(''), 800); }
   };
 
+  // ── corrections (only after the paper has ended) ──
+  const refreshSheet = async () => { await load(true); if (sheet) await openSheet(sheet.room, sheet, true, sheet.section ?? null); };
+  const toggleMark = async (x) => {
+    if (!sheet || sheet.state !== 'final') return;
+    const to = x.mark === 'P' ? 'A' : 'P';
+    setBusy(`m-${x.studentId}`);
+    try {
+      await api.post('/attendance/mark', { date: sheet.date, slot: sheet.slot, code: sheet.code, room: sheet.room, studentId: x.studentId, mark: to });
+      toast.success(`${x.studentId} ${x.name} → ${to === 'P' ? 'Present' : 'Absent'}`);
+      await refreshSheet();
+    } catch (err) { toast.error(errMsg(err, 'Could not change the attendance.')); }
+    finally { setBusy(''); }
+  };
+  const removeAdded = async (x) => {
+    if (!window.confirm(`Remove ${x.studentId} ${x.name} from this list? (only students added by hand can be removed)`)) return;
+    try {
+      await api.post('/attendance/remove-added', { date: sheet.date, slot: sheet.slot, code: sheet.code, studentId: x.studentId });
+      toast.success('Removed.'); await refreshSheet();
+    } catch (err) { toast.error(errMsg(err, 'Could not remove the student.')); }
+  };
+  const exportAbsentees = async () => {
+    setExporting(true);
+    try {
+      const r = await api.get('/attendance/absentees', { params: level ? { level } : {} });
+      downloadAbsentees(r.data, { levelLabel: level === 'ug' ? 'BS / Undergraduate' : level === 'pg' ? 'MS / Postgraduate' : 'All students (BS + MS)', preparedBy: admin?.displayName || admin?.username || '', fileTag: level ? level.toUpperCase() : '' });
+      toast.success(`Absentees exported — ${r.data.absentees.length} absent student-papers.`);
+    } catch (err) { toast.error(errMsg(err, 'Could not export the absentees.')); }
+    finally { setExporting(false); }
+  };
+  const examEnd = data.examEnd;
+
   const totals = useMemo(() => {
     const t = { rooms: data.rooms.length, papers: 0, students: 0, present: 0, absent: 0 };
     for (const r of data.rooms) { t.papers += r.papers.length; t.students += r.total; t.present += r.present; t.absent += r.absent; }
@@ -139,6 +175,11 @@ export default function Attendance() {
               <Radio size={14} /> {live ? 'Live' : 'Paused'}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => load()}><RefreshCw size={14} /> Refresh</button>
+            <button className={`btn btn-sm ${examEnd?.ended ? 'btn-brass' : 'btn-ghost'}`} disabled={!examEnd?.ended || exporting} onClick={exportAbsentees}
+              title={examEnd?.ended ? 'Download every absent student (all papers, course-wise, room-wise, totals) as Excel'
+                : examEnd ? `Available after the last paper ends — ${examEnd.day ? `${String(examEnd.day).slice(0, 3)} ` : ''}${examEnd.dateDisp} at ${endLabel(examEnd.slot)}` : 'No papers yet'}>
+              {examEnd?.ended ? <FileSpreadsheet size={14} /> : <Lock size={14} />} {exporting ? 'Exporting…' : 'Export Absentees'}
+            </button>
           </div>
         }
       />
@@ -306,6 +347,11 @@ export default function Attendance() {
                             </div>
                           </div>
                           <Badge state={sheet.state} />
+                          {sheet.state === 'final' && (
+                            <button className="btn btn-ghost btn-sm" onClick={() => setAddOpen(true)} title="Add a student who sat this paper but is not on this list">
+                              <UserPlus size={13} /> Add a student
+                            </button>
+                          )}
                           <button className={`btn btn-sm ${sheet.downloadable ? 'btn-primary' : 'btn-ghost'}`} disabled={!sheet.downloadable}
                             onClick={() => download(sheet.room, sheet, sheet.section ?? null)}
                             title={sheet.downloadable ? 'Download the attendance file' : `Downloadable after the paper ends (${endLabel(sheet.slot)})`}>
@@ -313,6 +359,11 @@ export default function Attendance() {
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => setSheet(null)} aria-label="Close"><X size={14} /></button>
                         </div>
+                        {sheet.state === 'final' && (
+                          <div style={{ padding: '7px 14px', fontSize: 12, background: '#fffbea', color: '#664d03', borderBottom: '1px solid var(--border,#e5ece8)' }}>
+                            Final list — click a <b>P</b> / <b>A</b> to switch it. Changes are saved at once and shown with a ✎.
+                          </div>
+                        )}
                         <ScrollX className="vw-tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}>
                           <table className="vw-table" style={{ width: '100%' }}>
                             <thead><tr><th>Seat</th><th>Reg No</th><th style={{ textAlign: 'left' }}>Name</th><th style={{ textAlign: 'left' }}>Degree / Batch</th><th>Sec</th><th>Attendance</th></tr></thead>
@@ -323,14 +374,27 @@ export default function Attendance() {
                                   <tr key={`${x.studentId}-${x.seat}`}>
                                     <td style={{ textAlign: 'center', fontWeight: 800, color: '#0f5132' }}>{x.seat}</td>
                                     <td className="vw-mono" style={{ textAlign: 'center' }}>{x.studentId}</td>
-                                    <td>{x.name}</td>
+                                    <td>{x.name}{x.added && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, color: '#084298', background: '#cfe2ff', borderRadius: 999, padding: '1px 7px' }}>ADDED</span>}</td>
                                     <td style={{ fontSize: 12 }}>{x.batch || x.program}</td>
                                     <td style={{ textAlign: 'center' }}>{x.section || ''}</td>
-                                    <td style={{ textAlign: 'center' }}>
-                                      <span title={typeof x.scannedAt === 'string' ? `Scanned ${new Date(x.scannedAt).toLocaleTimeString()}` : ''}
-                                        style={{ display: 'inline-block', minWidth: 30, fontWeight: 900, fontSize: 13, padding: '2px 8px', borderRadius: 8, background: m.bg, color: m.fg }}>
-                                        {x.mark}
-                                      </span>
+                                    <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                      {sheet.state === 'final' ? (
+                                        <button type="button" onClick={() => toggleMark(x)} disabled={busy === `m-${x.studentId}`}
+                                          title={`Click to mark ${x.mark === 'P' ? 'ABSENT' : 'PRESENT'}${x.manual ? ` · changed by ${x.editedBy || 'Exam Cell'}` : ''}`}
+                                          style={{ cursor: 'pointer', border: `1px solid ${m.fg}55`, minWidth: 30, fontWeight: 900, fontSize: 13, padding: '2px 8px', borderRadius: 8, background: m.bg, color: m.fg }}>
+                                          {x.mark}{x.manual ? ' ✎' : ''}
+                                        </button>
+                                      ) : (
+                                        <span title={typeof x.scannedAt === 'string' ? `Scanned ${new Date(x.scannedAt).toLocaleTimeString()}` : ''}
+                                          style={{ display: 'inline-block', minWidth: 30, fontWeight: 900, fontSize: 13, padding: '2px 8px', borderRadius: 8, background: m.bg, color: m.fg }}>
+                                          {x.mark}
+                                        </span>
+                                      )}
+                                      {x.added && sheet.state === 'final' && (
+                                        <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: '2px 6px' }} title="Remove this added student" onClick={() => removeAdded(x)}>
+                                          <Trash2 size={12} />
+                                        </button>
+                                      )}
                                     </td>
                                   </tr>
                                 );
@@ -347,6 +411,72 @@ export default function Attendance() {
           })}
         </div>
       )}
+      <AddStudentModal open={addOpen} sheet={sheet} onClose={() => setAddOpen(false)}
+        onDone={async () => { setAddOpen(false); await refreshSheet(); }} />
     </div>
+  );
+}
+
+/* Add a student who sat this paper but is not on its list (only after the paper ended). */
+function AddStudentModal({ open, sheet, onClose, onDone }) {
+  const toast = useToast();
+  const blank = { studentId: '', name: '', program: '', batch: '', seat: '', section: '', mark: 'P' };
+  const [f, setF] = useState(blank);
+  const [saving, setSaving] = useState(false);
+  // reg no → fill name / degree / batch; fields filled this way are replaced (or cleared)
+  // when the reg no changes, fields typed by hand are never overwritten
+  const auto = useRef({});
+  useEffect(() => { if (open) { setF({ ...blank, section: sheet?.section || '' }); auto.current = {}; } }, [open]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (!sheet) return null;
+  const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const lookup = async () => {
+    const sid = f.studentId.trim(); if (!sid) return;
+    let found = null;
+    try { const r = await api.get('/attendance/student', { params: { sid } }); if (r.data.found) found = r.data; } catch { /* no pre-fill */ }
+    setF((x) => {
+      const next = { ...x };
+      for (const k of ['name', 'program', 'batch']) {
+        const typed = x[k] && x[k] !== auto.current[k];
+        if (!typed) next[k] = (found && found[k]) || '';
+      }
+      auto.current = found ? { name: found.name || '', program: found.program || '', batch: found.batch || '' } : {};
+      return next;
+    });
+  };
+  const save = async () => {
+    if (!f.studentId.trim() || !f.name.trim()) { toast.error('Registration No and Student Name are required.'); return; }
+    setSaving(true);
+    try {
+      await api.post('/attendance/add', { date: sheet.date, slot: sheet.slot, code: sheet.code, room: sheet.room, ...f });
+      toast.success(`${f.studentId} ${f.name} added as ${f.mark === 'P' ? 'Present' : 'Absent'}.`);
+      onDone();
+    } catch (err) { toast.error(errMsg(err, 'Could not add the student.')); }
+    finally { setSaving(false); }
+  };
+  const lbl = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, fontWeight: 600 };
+  return (
+    <Modal open={open} onClose={onClose} title="Add a student to this attendance" width={520}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-faint,#6c7b72)', marginBottom: 12 }}>
+        <b style={{ color: '#0f5132' }}>{sheet.code}{sheet.section ? ` · Section ${sheet.section}` : ''}</b> — {sheet.courseName} · {sheet.room} · {sheet.dateDisp} · {sheet.slot}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <label style={lbl}>Registration No *<input className="input" value={f.studentId} onChange={set('studentId')} onBlur={lookup} placeholder="e.g. 7828" autoFocus /></label>
+        <label style={lbl}>Student Name *<input className="input" value={f.name} onChange={set('name')} /></label>
+        <label style={lbl}>Degree / Program<input className="input" value={f.program} onChange={set('program')} placeholder="e.g. BS Computer Science" /></label>
+        <label style={lbl}>Batch<input className="input" value={f.batch} onChange={set('batch')} placeholder="e.g. BS Computer Science Spring 2023" /></label>
+        <label style={lbl}>Seat No<input className="input" value={f.seat} onChange={set('seat')} placeholder="optional" /></label>
+        <label style={lbl}>Section<input className="input" value={f.section} onChange={set('section')} placeholder="optional" /></label>
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>Attendance *</span>
+        {[['P', 'Present (P)'], ['A', 'Absent (A)']].map(([v, t]) => (
+          <button key={v} type="button" className={`btn btn-sm ${f.mark === v ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setF((x) => ({ ...x, mark: v }))}>{t}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn btn-primary" disabled={saving} onClick={save}><UserPlus size={14} /> {saving ? 'Adding…' : 'Add to attendance'}</button>
+      </div>
+    </Modal>
   );
 }

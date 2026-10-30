@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform,
+  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform, Image, Vibration,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -30,11 +30,16 @@ const GREEN2 = '#198754';
 // URL (so no generic camera / QR app can open or verify it) — only this app knows
 // the prefix, extracts the token, and checks it against the exam server (API_BASE).
 const QR_PREFIX = 'ABASYN-ADMIT:';
+// Prefix of a digital STUDENT ID CARD QR (Office of Student Affairs module).
+const ID_PREFIX = 'AUSA1.';
 
 // Parse a scanned QR into { base, token }, or null if it is not an Abasyn card.
 function parseQR(data) {
   if (!data) return null;
   const s = String(data).trim();
+  // Student ID card (Office of Student Affairs): an encrypted "AUSA1.…" token. The
+  // whole text goes to the server, which opens it and checks the hidden card key.
+  if (s.startsWith(ID_PREFIX)) return { kind: 'id', qr: s.slice(0, 400) };
   // Opaque format: the payload leads with a human notice ("Only a valid scanner
   // can scan.") and carries "ABASYN-ADMIT:<token>|<host:port>". We read the token
   // AND the server host straight from the QR — so the app auto-follows whatever
@@ -50,14 +55,14 @@ function parseQR(data) {
     // The server address inside the QR (if any) is ignored on purpose: cards are
     // ALWAYS verified against the official server from config.js, so a forged QR
     // can never point the scanner at a fake server.
-    return { token: tok };
+    return { kind: 'admit', token: tok };
   }
   // Backward-compat: old cards whose QR was a full "{base}/verify/<token>" URL.
   const i = s.indexOf(VERIFY_PATH);
   if (i === -1) return null;
   const tok = s.slice(i + VERIFY_PATH.length).split(/[/?#]/)[0];
   if (!/^[A-Za-z0-9]{6,}$/.test(tok)) return null;
-  return { token: tok };
+  return { kind: 'admit', token: tok };
 }
 
 export default function App() {
@@ -114,32 +119,68 @@ export default function App() {
     setMode('result');
   }, []);
 
+  // Student ID card → Office of Student Affairs check on the same server.
+  const verifyId = useCallback(async (qr) => {
+    lastToken.current = { kind: 'id', qr };
+    setMode('loading');
+    let res = null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 45000);
+      try {
+        res = await fetch(`${SERVER}/api/affairs/scan`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qr, device: Platform.OS }), signal: ctrl.signal,
+        });
+      } catch { res = null; }
+      clearTimeout(timer);
+      setOnline(!!res);
+      if (!res) {
+        setResult({ type: 'error', message: 'Cannot reach the server. Check the phone\'s internet connection and try again. Do not allow entry until verified.' });
+      } else if (res.status === 429) {
+        setResult({ type: 'error', message: 'Too many scans in a short time. Wait a minute and scan again.' });
+      } else if (res.ok) {
+        const json = await res.json();
+        setResult({ type: 'id', data: json });
+        try { Vibration.vibrate(json.allow ? 70 : [0, 160, 90, 160, 90, 160]); } catch { /* no vibrator */ }
+      } else {
+        setResult({ type: 'error', message: `Server error (${res.status}).` });
+      }
+    } catch {
+      setResult({ type: 'error', message: 'Cannot reach the server. Check the phone\'s internet connection and try again.' });
+    }
+    setMode('result');
+  }, []);
+
   const onScan = useCallback(async ({ data }) => {
     if (lock.current) return;
     lock.current = true;
     const parsed = parseQR(data);
     if (!parsed) {
-      // Not an Abasyn admit-card QR at all (random / fake QR with no valid token).
+      // Neither an Abasyn admit card nor an Abasyn student ID card (random / fake QR).
       lastToken.current = null;
       setResult({ type: 'not_student' });
       setMode('result');
       return;
     }
-    await verify(parsed.token);
-  }, [verify]);
+    if (parsed.kind === 'id') await verifyId(parsed.qr);
+    else await verify(parsed.token);
+  }, [verify, verifyId]);
 
   // try the SAME card again (e.g. the server was waking up / the network dropped)
   const retry = useCallback(() => {
-    if (lastToken.current) verify(lastToken.current);
+    const last = lastToken.current;
+    if (last && typeof last === 'object' && last.kind === 'id') verifyId(last.qr);
+    else if (last) verify(last);
     else startScan();
-  }, [verify, startScan]);
+  }, [verify, verifyId, startScan]);
 
   return (
     <View style={styles.root}>
       <StatusBar style="light" />
       <View style={styles.header}>
         <Text style={styles.hTitle}>ABASYN UNIVERSITY</Text>
-        <Text style={styles.hSub}>Examination System — Admit Card Scanner</Text>
+        <Text style={styles.hSub}>Admit Card & Student ID Card Scanner</Text>
       </View>
 
       {/* Server status (fixed server from config.js — not editable on the phone) */}
@@ -178,7 +219,7 @@ function ScannerView({ permission, requestPermission, onScan }) {
     return (
       <View style={styles.center}>
         <Text style={styles.emoji}>📷</Text>
-        <Text style={styles.msg}>Camera access is needed to scan admit cards.</Text>
+        <Text style={styles.msg}>Camera access is needed to scan admit cards and student ID cards.</Text>
         <TouchableOpacity style={styles.btn} onPress={requestPermission}>
           <Text style={styles.btnText}>Grant Camera Permission</Text>
         </TouchableOpacity>
@@ -195,7 +236,7 @@ function ScannerView({ permission, requestPermission, onScan }) {
       />
       <View style={styles.overlay} pointerEvents="none">
         <View style={styles.frame} />
-        <Text style={styles.scanHint}>Point the camera at the admit-card QR</Text>
+        <Text style={styles.scanHint}>Point the camera at the admit card or ID card QR</Text>
       </View>
     </View>
   );
@@ -220,13 +261,14 @@ function ResultView({ result, onNext, onRetry }) {
       <Buttons top />
       <ScrollView contentContainerStyle={styles.resultScroll}>
         {result?.type === 'valid' && <ValidResult data={result.data} />}
+        {result?.type === 'id' && <IdCardResult data={result.data} />}
         {result?.type === 'record_not_found' && (
           <Banner tone="bad" emoji="🚫" title="Record Not Found"
             sub="This admit card is not in the university records. It may be forged — do not allow entry." />
         )}
         {result?.type === 'not_student' && (
           <Banner tone="bad" emoji="⛔" title="Student Not Exists"
-            sub="This QR is not a valid Abasyn admit card. Immediately inform the higher authority." />
+            sub="This QR is not a valid Abasyn admit card or student ID card. Immediately inform the higher authority." />
         )}
         {result?.type === 'error' && (
           <Banner tone="warn" emoji="⚠️" title="Could not verify" sub={result.message} />
@@ -281,6 +323,39 @@ function ValidResult({ data }) {
       )}
       {data.status === 'no_exams' && (
         <Banner tone="warn" emoji="📄" title="No exams found" sub="No papers are recorded for this admit card." />
+      )}
+    </View>
+  );
+}
+
+// Student ID card (Office of Student Affairs) — gate decision + the student's photo.
+const ID_TITLE = { granted: 'ENTRY GRANTED', fake: 'FAKE CARD', expired: 'CARD EXPIRED', blocked: 'CARD BLOCKED' };
+function IdCardResult({ data }) {
+  const allow = !!(data && data.allow);
+  const s = (data && data.student) || null;
+  const bg = allow ? '#15803d' : '#c81e1e';
+  return (
+    <View>
+      <View style={[styles.idBanner, { backgroundColor: bg }]}>
+        <Text style={styles.idIcon}>{allow ? '✓' : '✕'}</Text>
+        <Text style={styles.idTitle}>{ID_TITLE[data && data.result] || 'NOT VERIFIED'}</Text>
+        <Text style={styles.idMsg}>{(data && data.message) || 'This card seems fake. Do not allow entry'}</Text>
+        <Text style={styles.idKind}>STUDENT ID CARD</Text>
+      </View>
+      {s && (
+        <View style={styles.idCard}>
+          {s.photo ? <Image source={{ uri: s.photo }} style={styles.idPhoto} /> : null}
+          <Text style={styles.idName}>{s.name}</Text>
+          <Text style={styles.idReg}>{s.regNo}</Text>
+          {(s.fields || []).map(([k, v], i) => (
+            <View key={i} style={styles.idRow}><Text style={styles.idK}>{k}</Text><Text style={styles.idV}>{v}</Text></View>
+          ))}
+          <View style={styles.idRow}>
+            <Text style={styles.idK}>Valid Upto</Text>
+            <Text style={[styles.idV, { color: data.result === 'expired' ? '#c81e1e' : '#111' }]}>{s.expiryText}</Text>
+          </View>
+          {allow ? <Text style={styles.idMatch}>Match the photo with the person before entry</Text> : null}
+        </View>
       )}
     </View>
   );
@@ -373,6 +448,21 @@ const styles = StyleSheet.create({
 
   nextBtn: { backgroundColor: GREEN2 },
   nextText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+
+  idBanner: { borderRadius: 18, paddingVertical: 20, paddingHorizontal: 16, alignItems: 'center', marginBottom: 14 },
+  idIcon: { color: '#fff', fontSize: 64, fontWeight: '900', lineHeight: 72 },
+  idTitle: { color: '#fff', fontSize: 28, fontWeight: '900', letterSpacing: 1.2, textAlign: 'center' },
+  idMsg: { color: '#fff', fontSize: 16, fontWeight: '700', textAlign: 'center', marginTop: 6 },
+  idKind: { color: 'rgba(255,255,255,.8)', fontSize: 11, fontWeight: '800', letterSpacing: 1.5, marginTop: 10 },
+  idCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, alignItems: 'center',
+    shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 10, elevation: 2 },
+  idPhoto: { width: 130, height: 160, borderRadius: 12, borderWidth: 3, borderColor: '#C9A227', marginBottom: 8, backgroundColor: '#eef1f4' },
+  idName: { fontSize: 21, fontWeight: '800', color: '#0B4A2E', textAlign: 'center' },
+  idReg: { fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier', marginTop: 2, marginBottom: 8, color: '#111' },
+  idRow: { flexDirection: 'row', alignSelf: 'stretch', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#eef0f4' },
+  idK: { width: '40%', color: '#6b7280' },
+  idV: { flex: 1, fontWeight: '700', color: '#111' },
+  idMatch: { marginTop: 10, color: '#b45309', fontWeight: '700', textAlign: 'center' },
 
   btn: { backgroundColor: GREEN2, borderRadius: 999, paddingVertical: 13, paddingHorizontal: 22 },
   btnText: { color: '#fff', fontWeight: '700' },

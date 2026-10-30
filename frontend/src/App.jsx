@@ -27,6 +27,7 @@ import StudentPortal from './pages/StudentPortal';
 import FacultyPortal from './pages/FacultyPortal';
 import Constraints from './pages/Constraints';
 import About from './pages/About';
+import StudentAffairs from './pages/StudentAffairs';
 
 function Protected({ children }) {
   const { admin, booting } = useAuth();
@@ -37,7 +38,7 @@ function Protected({ children }) {
 }
 
 // Where each role lands after login / on the index route.
-const HOME_BY_ROLE = { admin: '/dashboard', finance: '/admit-cards', faculty: '/faculty', student: '/student' };
+const HOME_BY_ROLE = { admin: '/dashboard', finance: '/admit-cards', faculty: '/faculty', student: '/student', affairs: '/student-affairs' };
 
 // Restrict a route to specific roles; anyone else is bounced to their own home.
 function Guard({ roles, children }) {
@@ -118,6 +119,8 @@ export default function App() {
               {/* Faculty & Student portals (built in later phases) */}
               <Route path="faculty" element={<Guard roles={['faculty']}><FacultyPortal /></Guard>} />
               <Route path="student" element={<Guard roles={['student']}><StudentPortal /></Guard>} />
+              {/* Office of Student Affairs — digital student ID cards */}
+              <Route path="student-affairs" element={<Guard roles={['affairs']}><StudentAffairs /></Guard>} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

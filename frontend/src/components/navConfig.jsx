@@ -59,11 +59,15 @@ export const SIDEBAR_BY_ROLE = {
     { to: '/student', label: 'My Portal', icon: LayoutDashboard },
     { to: '/about', label: 'About', icon: Info },
   ],
+  affairs: [
+    { to: '/student-affairs', label: 'Student ID Cards', icon: Contact },
+    { to: '/about', label: 'About', icon: Info },
+  ],
 };
 
 // Role → label shown in the top bar.
 export const ROLE_LABEL = {
-  admin: 'Exam Cell', finance: 'Finance Office', faculty: 'Faculty', student: 'Student',
+  admin: 'Exam Cell', finance: 'Finance Office', faculty: 'Faculty', student: 'Student', affairs: 'Student Affairs',
 };
 
 /* ── Top-bar mega menus ── */
