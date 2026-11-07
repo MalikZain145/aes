@@ -65,6 +65,17 @@ app.use('/api/affairs', require('./routes/affairs'));   // Office of Student Aff
 const _verify = require('./controllers/verifyController');
 app.get('/verify/:token', _verify.renderVerify);   // phone browser → HTML page
 app.get('/api/verify/:token', _verify.verifyJson); // mobile scanner app → JSON
+// Scanner app version gate. Set SCANNER_MIN_VERSION (e.g. 1.1.0) + SCANNER_APK_URL
+// only when a NEW APK is required; older apps then show "Update Abasyn Scheduler to
+// proceed" with a download button. Everyday code changes go out with `eas update`.
+app.get('/api/app/version', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    minVersion: String(process.env.SCANNER_MIN_VERSION || '').trim(),
+    apkUrl: String(process.env.SCANNER_APK_URL || '').trim(),
+    message: String(process.env.SCANNER_UPDATE_MESSAGE || '').trim(),
+  });
+});
 
 // ── Serve built frontend in production ───────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {

@@ -50,6 +50,14 @@
         "projectId": "a2f5d276-d3cf-45af-82bb-ed41a421b55d"
       }
     },
-    "owner": "zain312"
+    "owner": "zain312",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/a2f5d276-d3cf-45af-82bb-ed41a421b55d",
+      "checkAutomatically": "NEVER",
+      "fallbackToCacheTimeout": 0
+    }
   }
 }

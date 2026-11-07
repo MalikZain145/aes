@@ -61,6 +61,54 @@ async function resolveVerified(rawToken) {
   return { rec, token };
 }
 
+/* ── Revocation: once the exam an admit card was issued for is OVER (the last paper
+ * of its batch has ended, Pakistan time), the card is revoked — scanning it says
+ * "Admit Card Revoked. Do not allow entry." so an old Mids card can never be used
+ * again in the Finals (or in an exam held again). Nothing is stored or changed. */
+const _batchEnd = new Map();   // batchId → { at, end: { date, slot } }
+function lastPaper(exams) {
+  let last = null;
+  for (const e of exams || []) {
+    if (!e || !e.date) continue;
+    const fin = toMinutes(String(e.slot || '').split('-')[1] || e.finish || '') || 0;
+    if (!last || e.date > last.date || (e.date === last.date && fin > last.fin)) last = { date: e.date, slot: e.slot, fin };
+  }
+  return last;
+}
+async function examEndOf(rec) {
+  if (!rec.batchId) return lastPaper(rec.exams);
+  const k = String(rec.batchId);
+  const c = _batchEnd.get(k);
+  if (c && Date.now() - c.at < 10 * 60 * 1000) return c.end;
+  let end = null;
+  try {
+    const g = await AdmitVerification.aggregate([
+      { $match: { batchId: rec.batchId } },
+      { $unwind: '$exams' },
+      { $group: { _id: { date: '$exams.date', slot: '$exams.slot' } } },
+    ]);
+    end = lastPaper(g.map((x) => x._id));
+  } catch { end = null; }
+  if (!end) end = lastPaper(rec.exams);
+  _batchEnd.set(k, { at: Date.now(), end });
+  return end;
+}
+async function isRevoked(rec) {
+  const end = await examEndOf(rec);
+  if (!end) return false;
+  return require('../utils/examClock').slotPhase(end.date, end.slot) === 'after';
+}
+// "Mids Fall 2026" / "Finals Spring 2027"
+function cardLabel(rec) {
+  const src = `${rec.examType || ''} ${rec.heading || ''}`;
+  const kind = /mid/i.test(src) ? 'Mids' : (/final/i.test(src) ? 'Finals' : 'Exam');
+  const sem = String(rec.semester || '').trim();
+  const yr = rec.year != null ? String(rec.year).trim() : '';
+  const term = sem && yr && !sem.includes(yr) ? `${sem} ${yr}` : (sem || yr);
+  return `${kind}${term ? ` ${term}` : ''}`;
+}
+const REVOKED_MSG = 'Admit Card Revoked. Do not allow entry.';
+
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -167,6 +215,22 @@ exports.verifyJson = async (req, res) => {
   const v = await resolveVerified(req.params.token);
   if (!v) return res.status(404).json({ ok: false, reason: 'not_found', message: GENERIC_FAIL });
   const rec = v.rec;
+  if (await isRevoked(rec)) {
+    return res.json({
+      ok: true,
+      revoked: true,
+      revokedLabel: cardLabel(rec),            // e.g. "Mids Fall 2026"
+      message: REVOKED_MSG,
+      student: { name: rec.name, registrationNo: rec.studentId, degree: rec.program, batch: rec.batch },
+      feeStatus: rec.feeStatus || 'Paid',
+      heading: rec.heading || '',
+      status: 'over',          // older scanner apps show "All papers are over"
+      today: [],
+      attendanceMarked: false,
+      attendanceCourses: [],
+      verifiedAt: new Date().toISOString(),
+    });
+  }
   const s = computeStatus(rec);
   // Scanning IS the attendance: mark present for any paper active right now.
   const markedCodes = await markPresent(rec, s.today);
@@ -193,6 +257,15 @@ exports.renderVerify = async (req, res) => {
       <p>Please report to the Examination Cell immediately.</p></div>`, 'Invalid admit card'));
   }
   const rec = v.rec;
+
+  if (await isRevoked(rec)) {
+    return res.send(page(`<div class="top" style="background:linear-gradient(135deg,#c81e1e,#7f1d1d)"><h1>ABASYN UNIVERSITY</h1><p>Examination Verification</p></div>
+      <div class="big"><div class="ic">⛔</div><h2 style="color:#b91c1c">Admit Card Revoked</h2>
+      <p style="font-weight:700;color:#7f1d1d">Do not allow entry.</p>
+      <p style="margin-top:10px">Admit Card: <b>${esc(cardLabel(rec))}</b></p></div>
+      <div class="stu" style="border-top:1px solid #eef2f0"><div class="nm">${esc(rec.name)}</div>
+      <div class="rw"><span>Registration No</span><b>${esc(rec.studentId) || '—'}</b></div></div>`, 'Admit card revoked'));
+  }
 
   const header = `<div class="top"><h1>ABASYN UNIVERSITY</h1><p>${esc(rec.heading || 'Examination Verification')}</p></div>`
     + studentBlock(rec);
@@ -240,6 +313,6 @@ exports.renderVerify = async (req, res) => {
       <p>There is no paper scheduled for today (${esc(today)}).</p></div>`;
   }
 
-  const foot = `<div class="foot">Verified on ${esc(now.toLocaleString())} · Abasyn University Examination System</div>`;
+  const foot = `<div class="foot">Verified on ${esc(new Date().toLocaleString('en-GB', { timeZone: require('../utils/examClock').TZ }))} · Abasyn University Examination System</div>`;
   return res.send(page(header + body + foot));
 };

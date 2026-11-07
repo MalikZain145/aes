@@ -99,15 +99,17 @@ export default function Attendance() {
     finally { if (!quiet) setBusy(''); }
   }, [level, toast]);
 
-  // live: refresh the rooms + the open file every 10 s
+  // live: refresh the rooms + the open file every 10 s — stops for good once the
+  // last paper of the exam is over (nothing can change any more except corrections)
+  const examOver = !!data.examEnd?.ended;
   useEffect(() => {
-    if (!live) return undefined;
+    if (!live || examOver) return undefined;
     const t = setInterval(() => {
       load(true);
       if (sheet) openSheet(sheet.room, sheet, true, sheet.section ?? null);
     }, 10000);
     return () => clearInterval(t);
-  }, [live, load, sheet, openSheet]);
+  }, [live, examOver, load, sheet, openSheet]);
 
   const download = async (room, p, section) => {
     const sec = section === undefined ? (p.section ?? null) : section;
@@ -190,10 +192,19 @@ export default function Attendance() {
                   className={`btn btn-sm ${level === v ? 'btn-primary' : 'btn-ghost'}`} style={{ borderRadius: 0, minWidth: 46 }}>{lbl}</button>
               ))}
             </div>
-            <button className={`btn btn-sm ${live ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setLive((v) => !v)}>
-              <Radio size={14} /> {live ? 'Live' : 'Paused'}
-            </button>
-            <button className="btn btn-ghost btn-sm" onClick={() => load()}><RefreshCw size={14} /> Refresh</button>
+            {!examOver ? (
+              <>
+                <button className={`btn btn-sm ${live ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setLive((v) => !v)}>
+                  <Radio size={14} /> {live ? 'Live' : 'Paused'}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={() => load()}><RefreshCw size={14} /> Refresh</button>
+              </>
+            ) : (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, padding: '5px 10px', borderRadius: 999, background: '#e2e3e5', color: '#41464b' }}
+                title={`Last paper ended — ${data.examEnd.dateDisp || ''}`}>
+                <CheckCircle2 size={14} /> Exam over · attendance final
+              </span>
+            )}
             <div ref={exportRef} style={{ position: 'relative' }}>
               <button className="btn btn-sm btn-brass" disabled={!!exporting || !data.rooms.length} onClick={() => setExportOpen((v) => !v)}
                 aria-haspopup="menu" aria-expanded={exportOpen}

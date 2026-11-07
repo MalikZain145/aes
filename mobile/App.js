@@ -1,7 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform, Image, Vibration,
+  StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Platform, Image, Vibration, AppState, Linking,
 } from 'react-native';
+import * as Updates from 'expo-updates';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { API_BASE, VERIFY_PATH } from './config';
@@ -65,7 +66,121 @@ function parseQR(data) {
   return { kind: 'admit', token: tok };
 }
 
+/* ═══════════════ App updates ═══════════════
+ * 1. Code updates (screens, messages, rules — almost every change) are published
+ *    with `eas update --channel production`. When the scanner opens (or comes back
+ *    to the screen) it checks; if a new version exists it shows
+ *    "Update Abasyn Scheduler to proceed" and one tap downloads it and restarts the
+ *    app — no new APK, nothing to send to anyone.
+ * 2. A change that needs a NEW APK (new native module / permission): set
+ *    SCANNER_MIN_VERSION and SCANNER_APK_URL on the server. Older apps then show
+ *    the same screen with a "Download update" button that downloads the new APK.
+ * If the update server cannot be reached, scanning is never blocked. */
+const APP_VERSION = String((Updates && Updates.runtimeVersion) || '1.0.0');
+const verCmp = (a, b) => {
+  const x = String(a || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const y = String(b || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; }
+  return 0;
+};
+
 export default function App() {
+  const [gate, setGate] = useState({ state: 'checking' });   // checking | ok | ota | apk | updating | failed
+  const busy = useRef(false);
+
+  const checkUpdates = useCallback(async (first) => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      // a) is this APK too old? (only when the server names a minimum version)
+      try {
+        const c = new AbortController(); const t = setTimeout(() => c.abort(), 8000);
+        const r = await fetch(`${SERVER}/api/app/version`, { signal: c.signal });
+        clearTimeout(t);
+        if (r.ok) {
+          const v = await r.json();
+          if (v && v.minVersion && v.apkUrl && verCmp(APP_VERSION, v.minVersion) < 0) {
+            setGate({ state: 'apk', apkUrl: v.apkUrl, latest: v.minVersion, note: v.message || '' });
+            return;
+          }
+        }
+      } catch { /* server asleep / offline — never block scanning for this */ }
+      // b) is a newer version of the app's code published?
+      if (!__DEV__ && Updates.isEnabled) {
+        try {
+          const u = await Updates.checkForUpdateAsync();
+          if (u && u.isAvailable) { setGate({ state: 'ota' }); return; }
+        } catch { /* offline — carry on */ }
+      }
+      if (first) setGate({ state: 'ok' });
+    } finally { busy.current = false; }
+  }, []);
+
+  useEffect(() => { checkUpdates(true); }, [checkUpdates]);
+  // check again whenever the scanner is brought back to the screen
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') checkUpdates(false); });
+    return () => sub.remove();
+  }, [checkUpdates]);
+
+  const applyUpdate = useCallback(async () => {
+    setGate({ state: 'updating' });
+    try {
+      await Updates.fetchUpdateAsync();
+      await Updates.reloadAsync();          // restarts the app on the new version
+    } catch (e) {
+      setGate({ state: 'failed', message: 'The update could not be downloaded. Check the internet connection and try again.' });
+    }
+  }, []);
+
+  if (gate.state === 'ok') return <ScannerApp />;
+  return <UpdateScreen gate={gate} onUpdate={applyUpdate} onRetry={() => { setGate({ state: 'checking' }); checkUpdates(true); }}
+    onSkip={() => setGate({ state: 'ok' })} />;
+}
+
+function UpdateScreen({ gate, onUpdate, onRetry, onSkip }) {
+  const { state } = gate;
+  return (
+    <View style={styles.root}>
+      <StatusBar style="light" />
+      <View style={styles.header}>
+        <Text style={styles.hTitle}>ABASYN UNIVERSITY</Text>
+        <Text style={styles.hSub}>Admit Card & Student ID Card Scanner</Text>
+      </View>
+      <View style={styles.center}>
+        {state === 'checking' && (<><ActivityIndicator size="large" color={GREEN2} /><Text style={styles.muted}>Checking for updates…</Text></>)}
+        {state === 'updating' && (<><ActivityIndicator size="large" color={GREEN2} /><Text style={styles.msg}>Updating Abasyn Scheduler…</Text><Text style={styles.muted}>The app restarts by itself when the update is ready.</Text></>)}
+        {(state === 'ota' || state === 'apk' || state === 'failed') && (
+          <>
+            <Text style={styles.emoji}>⬆️</Text>
+            <Text style={[styles.msg, { fontWeight: '800', fontSize: 19 }]}>Update Abasyn Scheduler to proceed</Text>
+            <Text style={[styles.muted, { textAlign: 'center', marginBottom: 18, marginTop: 0 }]}>
+              {state === 'failed' ? gate.message
+                : state === 'apk' ? (gate.note || `A new version (${gate.latest}) is required. Download it and tap Install when Android asks.`)
+                  : 'A new version of the scanner is available.'}
+            </Text>
+            {state === 'apk' ? (
+              <TouchableOpacity style={styles.btn} onPress={() => Linking.openURL(gate.apkUrl)}>
+                <Text style={styles.btnText}>Download update</Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.btn} onPress={state === 'failed' ? onRetry : onUpdate}>
+                <Text style={styles.btnText}>{state === 'failed' ? 'Try again' : 'Update now'}</Text>
+              </TouchableOpacity>
+            )}
+            {state === 'failed' && (
+              <TouchableOpacity onPress={onSkip} style={{ marginTop: 14 }}>
+                <Text style={[styles.muted, { textDecorationLine: 'underline' }]}>Continue without updating</Text>
+              </TouchableOpacity>
+            )}
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function ScannerApp() {
   const [permission, requestPermission] = useCameraPermissions();
   const [mode, setMode] = useState('scan');      // scan | loading | result
   const [result, setResult] = useState(null);
@@ -294,6 +409,25 @@ function Banner({ tone, emoji, title, sub }) {
 function ValidResult({ data }) {
   const s = data.student || {};
   const feePaid = /paid/i.test(data.feeStatus || '');
+  // The exam this card was issued for is over → the card is revoked.
+  if (data.revoked) {
+    return (
+      <View>
+        <View style={[styles.idBanner, { backgroundColor: '#c81e1e' }]}>
+          <Text style={styles.idIcon}>✕</Text>
+          <Text style={styles.idTitle}>ADMIT CARD REVOKED</Text>
+          <Text style={styles.idMsg}>Do not allow entry.</Text>
+          <Text style={styles.idKind}>Admit Card: {data.revokedLabel || 'previous exam'}</Text>
+        </View>
+        <View style={styles.stuCard}>
+          <Text style={styles.stuName}>{s.name || '—'}</Text>
+          <Row k="Registration No" v={s.registrationNo} />
+          <Row k="Degree" v={s.degree} />
+          <Row k="Batch" v={s.batch} />
+        </View>
+      </View>
+    );
+  }
   return (
     <View>
       <View style={styles.stuCard}>
