@@ -39,6 +39,10 @@ exports.create = async (req, res) => {
     const GeneratedFile = require('../models/GeneratedFile');
     const prev = await AcademicTerm.findOne({ active: true }).sort({ createdAt: -1 }).lean();
     const prevName = prev ? prev.name : 'Previous Semester';
+    // Every exam of the outgoing term (admit cards, seating, attendance …) is kept
+    // as its own folder in the archive before the term's files move there.
+    try { await require('../utils/examArchive').archiveConductedExams({ includeUnfinished: true, reason: 'new academic term opened' }); }
+    catch (e) { console.error('exam archive:', e.message); }
     const arch = await GeneratedFile.updateMany(
       { archived: { $ne: true }, kind: { $in: ['datesheet', 'admit_cards', 'clash_report', 'timetable'] } },
       { $set: { archived: true, archivedTerm: prevName } },

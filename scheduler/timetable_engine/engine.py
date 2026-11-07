@@ -23,6 +23,22 @@ from parse import load_courses, load_students, norm_teacher
 CFG = json.load(open('config.json'))
 ROOMS = CFG['rooms']
 
+# Rooms reserved for some departments (e.g. GP1 / GP2 computer labs → computing courses
+# only). A room with `only: ["CS", "SE", ...]` may host a class only when the course
+# code starts with one of those prefixes; every other room is open to all courses.
+def _prefix(code):
+    m = re.match(r'[A-Za-z]+', str(code or ''))
+    return m.group(0).upper() if m else ''
+
+
+def room_ok(room, code):
+    only = room.get('only') or []
+    return not only or _prefix(code) in {str(x).upper() for x in only}
+
+
+OPEN_ROOMS = [r for r in ROOMS if not r.get('only')]
+RESTRICTED = [r for r in ROOMS if r.get('only')]
+
 
 # --------------------------------------------------------------------------- DB input
 # The AMS drives this engine straight from its database (no Excel upload): the backend
@@ -40,6 +56,8 @@ def _courses_from_json(rows):
                 nt = norm_teacher(teacher)
                 if nt:
                     teacher, tk = nt
+                else:
+                    teacher = None                  # "no teacher" / blank → TBA, never a real person
             secs.append({'label': (str(s.get('label') or '').strip() or 'A'),
                          'teacher': teacher, 'tkey': tk})
         out.append({'row': int(c.get('row') or 0), 'code': str(c['code']).strip(),
@@ -317,10 +335,28 @@ class Timetable:
         self.cap_slack = []
         peak = m.NewIntVar(0, len(classrooms), 'peak')
         penalties.append((peak, 3))
+        code_of = [self.offerings[self.secmap[ss['sec']]['off']]['code'] for ss in S]
+        # sessions that can NOT use a reserved room (e.g. a non-computing course vs GP1/GP2)
+        open_only = [si for si in range(len(S)) if not any(room_ok(r, code_of[si]) for r in RESTRICTED)]
+        ocaps = sorted(set(r['cap'] for r in OPEN_ROOMS))
         for t in range(self.T):
             alls = [v for si in range(len(S)) for v in occ(si, t)]
             m.Add(sum(alls) <= len(classrooms))
             m.Add(sum(alls) <= peak)
+            if RESTRICTED:
+                # HARD: those sessions must fit in the open rooms alone
+                oo = [v for si in open_only for v in occ(si, t)]
+                if len(oo) > len(OPEN_ROOMS):
+                    m.Add(sum(oo) <= len(OPEN_ROOMS))
+                # capacity levels inside the open rooms (soft, like below)
+                for i in range(1, len(ocaps)):
+                    need = [v for si in open_only if size[si] > ocaps[i - 1] for v in occ(si, t)]
+                    have = sum(1 for r in OPEN_ROOMS if r['cap'] >= ocaps[i])
+                    if len(need) > have:
+                        ov2 = m.NewIntVar(0, len(S), f'ovo{t}_{i}')
+                        penalties.append((ov2, CFG.get('w_capacity', 200)))
+                        self.cap_slack.append(ov2)
+                        m.Add(sum(need) - have <= ov2)
             # Hall deficiency for nested room sets: the minimum number of sessions in
             # slot t that cannot get a big-enough room = max_i (need_i - have_i).
             ov = None
@@ -450,15 +486,21 @@ class Timetable:
             if not todo:
                 continue
             C = np.zeros((len(todo), len(free)))
+            bonus = CFG.get('reserved_room_bonus', 25)
             for a, si in enumerate(todo):
                 sec = self.secmap[self.sessions[si]['sec']]
+                code = self.offerings[sec['off']]['code']
                 n = len(sec['final'])
                 for b, ri in enumerate(free):
                     cap = R[ri]['cap']
+                    if not room_ok(R[ri], code):
+                        C[a, b] = 1e7                       # reserved room, wrong department
+                        continue
                     over = max(0, n - cap)
                     # 1st: fewest over-full sessions, 2nd: fewest extra chairs, 3rd: least waste
                     C[a, b] = (CFG.get("w_room_overfull_session", 150) if over else 0) + 100 * over + (cap - n if cap >= n else 0) \
-                        + (0 if pref.get(sec['id']) == ri else 4)
+                        + (0 if pref.get(sec['id']) == ri else 4) \
+                        - (bonus if R[ri].get('only') and not over else 0)   # fill reserved rooms with their own courses first
             ra, cb = linear_sum_assignment(C)
             for a, b in zip(ra, cb):
                 si = todo[a]
@@ -492,6 +534,8 @@ class Timetable:
             if n > ROOMS[ri]['cap']:
                 over.append((si, n, ROOMS[ri]['cap']))
         rep['over_capacity'] = over
+        rep['reserved_room_misuse'] = [si for si, ri in self.room.items()
+                                       if not room_ok(ROOMS[ri], self.offerings[self.secmap[self.sessions[si]['sec']]['off']]['code'])]
         return rep
 
 

@@ -19,6 +19,7 @@ const { spawn } = require('child_process');
 const Course = require('../models/Course');
 const StudentRegistration = require('../models/StudentRegistration');
 const Room = require('../models/Room');
+const Lab = require('../models/Lab');
 const User = require('../models/User');
 const Setting = require('../models/Setting');
 const TimetableRun = require('../models/TimetableRun');
@@ -31,7 +32,7 @@ const OUTPUT_DIR = path.join(__dirname, '..', '..', 'scheduler', 'output');
 const WORKROOT = process.env.TIMETABLE_WORKDIR || path.join(os.tmpdir(), 'auic_tt_runs');
 const PYTHON = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
 const TIMEOUT_MS = Math.max(60000, parseInt(process.env.TIMETABLE_TIMEOUT_MS, 10) || 20 * 60 * 1000);
-const ENGINE_FILES = ['engine.py', 'parse.py', 'export.py', 'verify_json.py', 'render_style.py'];
+const ENGINE_FILES = ['engine.py', 'parse.py', 'export.py', 'verify_json.py', 'render_style.py', 'abasyn_logo.png'];
 const LOGO_SRC = path.join(__dirname, '..', '..', 'frontend', 'public', 'favicon.png');
 const CONFIG_KEY = 'timetable_config';
 const norm = (s) => String(s == null ? '' : s).trim();
@@ -49,6 +50,40 @@ async function roomsFromDb() {
     type: r.type === 'lab' ? 'lab' : 'classroom',
   }));
 }
+// Which rooms the timetable may use:
+//  • only the rooms listed in config `rooms_allowed` (the official timetable rooms —
+//    names compared without spaces / dashes, and "I-213" also matches "I-213A");
+//  • plus the `computing_rooms` (GP1 / GP2 — found in Labs or Rooms), which are
+//    reserved for computing courses (`computing_prefixes`) — the engine enforces it.
+// Capacities always come from Rooms & Labs. Lab-type rooms are never used for theory.
+const rnorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+function allowedMatch(name, allowed) {
+  const n = rnorm(name);
+  return allowed.some((a) => { const k = rnorm(a); return n === k || (n.startsWith(k) && /^[A-Z]$/.test(n.slice(k.length))); });
+}
+async function timetableRooms(cfg) {
+  const all = await roomsFromDb();
+  let rooms = all.filter((r) => r.type !== 'lab');
+  const allowed = Array.isArray(cfg.rooms_allowed) && cfg.rooms_allowed.length ? cfg.rooms_allowed : null;
+  if (allowed) rooms = rooms.filter((r) => allowedMatch(r.name, allowed));
+  const comp = Array.isArray(cfg.computing_rooms) ? cfg.computing_rooms : [];
+  const notFound = [];
+  if (comp.length) {
+    let labs = [];
+    try { labs = await Lab.find({ active: { $ne: false } }).lean(); } catch { /* no labs */ }
+    const pool = [...labs.map((l) => ({ name: l.name, cap: Number(l.capacity) || 0, block: 'Labs' })),
+      ...all.map((r) => ({ name: r.name, cap: r.cap, block: r.block }))];
+    const only = (cfg.computing_prefixes && cfg.computing_prefixes.length) ? cfg.computing_prefixes : ['CS', 'SE', 'AI', 'DS', 'IT'];
+    for (const want of comp) {
+      const hit = pool.find((p) => rnorm(p.name) === rnorm(want));
+      if (!hit) { notFound.push(want); continue; }
+      rooms = rooms.filter((r) => rnorm(r.name) !== rnorm(hit.name));
+      rooms.push({ name: hit.name, block: hit.block, cap: hit.cap, type: 'classroom', only });
+    }
+  }
+  const missing = (allowed ? allowed.filter((a) => !rooms.some((r) => allowedMatch(r.name, [a]))) : []).concat(notFound);
+  return { rooms, missing };
+}
 // Merge the stored rules with live DB rooms. Rooms always come from the DB (single
 // source of truth); if the DB has none we fall back to the engine's bundled list.
 async function effectiveConfig() {
@@ -56,8 +91,11 @@ async function effectiveConfig() {
   let stored = null;
   try { const s = await Setting.findOne({ key: CONFIG_KEY }).lean(); stored = s && s.value; } catch { /* ignore */ }
   const cfg = stored && typeof stored === 'object' ? { ...base, ...stored } : base;
-  const dbRooms = await roomsFromDb();
-  cfg.rooms = dbRooms.length ? dbRooms : base.rooms;
+  // keys the official layout depends on always come from the engine defaults when unset
+  for (const k of ['rooms_allowed', 'computing_rooms', 'computing_prefixes', 'reserved_room_bonus']) if (cfg[k] == null) cfg[k] = base[k];
+  const { rooms, missing } = await timetableRooms(cfg);
+  cfg.rooms = rooms.length ? rooms : base.rooms;
+  cfg.rooms_missing = missing;
   return cfg;
 }
 
@@ -145,6 +183,7 @@ exports.createRun = async (req, res) => {
   if (!built.data.students.length) return res.status(400).json({ error: 'No student registrations found in the database.' });
 
   const term = norm((req.body && req.body.term)) || cfg.term || 'Fall 2026';
+  cfg.term = term;
   const run = await TimetableRun.create({
     term, status: 'queued', config: cfg, summary: built.summary,
     createdBy: (req.user && req.user.id) ? String(req.user.id) : '',
@@ -165,7 +204,11 @@ async function runEngine(runId, cfg, data) {
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(cfg, null, 1));
     fs.writeFileSync(path.join(dir, 'data.json'), JSON.stringify(data));
 
-    run.status = 'running'; run.startedAt = new Date(); await run.save();
+    run.status = 'running'; run.startedAt = new Date();
+    const rs = cfg.rooms || [];
+    run.log = `Rooms used: ${rs.length} (${rs.map((r) => `${r.name}${r.only ? ' [computing only]' : ''} ${r.cap}`).join(', ')})\n`
+      + (cfg.rooms_missing && cfg.rooms_missing.length ? `Not in Rooms & Labs (skipped — add them to use): ${cfg.rooms_missing.join(', ')}\n` : '');
+    await run.save();
 
     const code = await spawnPy(dir, ['engine.py'], run, TIMEOUT_MS);
     if (code !== 0) throw new Error(`engine exited with code ${code}`);

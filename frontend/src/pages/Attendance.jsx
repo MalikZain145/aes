@@ -2,14 +2,13 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   UserCheck, RefreshCw, FileText, DoorOpen, ChevronRight, Users, CheckCircle2, XCircle, Clock, Radio,
-  Lock, Download, Eye, X, CalendarDays, UserPlus, FileSpreadsheet, Trash2,
+  Lock, Download, Eye, X, CalendarDays, UserPlus, FileSpreadsheet, Trash2, ChevronDown, UserX,
 } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { downloadFile } from '../api/download';
 import { useToast } from '../context/ToastContext';
 import { PageHeader, Loader, EmptyState, Modal } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
-import { downloadAbsentees } from './attendance/absenteesExcel';
 import ScrollX from '../components/ScrollX';
 
 /* Exam Attendance — every room that has a paper is a strip. Open a room to see one
@@ -64,7 +63,9 @@ export default function Attendance() {
   const [secFor, setSecFor] = useState(null);       // paper whose sections (A/B/C) are shown
   const [busy, setBusy] = useState('');
   const [addOpen, setAddOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting] = useState('');      // '' | 'absent' | 'present' | 'all'
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportRef = useRef(null);
   const { admin } = useAuth();
   const sheetRef = useRef(null);
 
@@ -137,14 +138,32 @@ export default function Attendance() {
       toast.success('Removed.'); await refreshSheet();
     } catch (err) { toast.error(errMsg(err, 'Could not remove the student.')); }
   };
-  const exportAbsentees = async () => {
-    setExporting(true);
+  // Export → Absentees / Presentees / All. Built by the server from the live
+  // attendance at the moment of the click, so every scan and correction is in it.
+  useEffect(() => {
+    if (!exportOpen) return undefined;
+    const close = (e) => { if (exportRef.current && !exportRef.current.contains(e.target)) setExportOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setExportOpen(false); };
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+  }, [exportOpen]);
+  const exportAs = async (type) => {
+    setExportOpen(false); setExporting(type);
     try {
-      const r = await api.get('/attendance/absentees', { params: level ? { level } : {} });
-      downloadAbsentees(r.data, { levelLabel: level === 'ug' ? 'BS / Undergraduate' : level === 'pg' ? 'MS / Postgraduate' : 'All students (BS + MS)', preparedBy: admin?.displayName || admin?.username || '', fileTag: level ? level.toUpperCase() : '' });
-      toast.success(`Absentees exported — ${r.data.absentees.length} absent student-papers.`);
-    } catch (err) { toast.error(errMsg(err, 'Could not export the absentees.')); }
-    finally { setExporting(false); }
+      const r = await api.get('/attendance/export', { params: { type, ...(level ? { level } : {}) }, responseType: 'blob', timeout: 600000 });
+      const cd = r.headers['content-disposition'] || '';
+      const m = cd.match(/filename="?([^";]+)"?/i);
+      const name = m ? m[1] : `${type === 'absent' ? 'Absentees' : type === 'present' ? 'Presentees' : 'Attendance_All'}.xlsx`;
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      const n = Number(r.headers['x-export-rows'] || 0);
+      toast.success(`${type === 'absent' ? 'Absentees' : type === 'present' ? 'Presentees' : 'Attendance'} exported — ${n} student-paper${n === 1 ? '' : 's'}.`);
+    } catch (err) {
+      let msg = 'Could not export the attendance.';
+      try { const j = JSON.parse(await err.response.data.text()); if (j.error) msg = j.error; } catch { /* not JSON */ }
+      toast.error(msg);
+    } finally { setExporting(''); }
   };
   const examEnd = data.examEnd;
 
@@ -175,11 +194,38 @@ export default function Attendance() {
               <Radio size={14} /> {live ? 'Live' : 'Paused'}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => load()}><RefreshCw size={14} /> Refresh</button>
-            <button className={`btn btn-sm ${examEnd?.ended ? 'btn-brass' : 'btn-ghost'}`} disabled={!examEnd?.ended || exporting} onClick={exportAbsentees}
-              title={examEnd?.ended ? 'Download every absent student (all papers, course-wise, room-wise, totals) as Excel'
-                : examEnd ? `Available after the last paper ends — ${examEnd.day ? `${String(examEnd.day).slice(0, 3)} ` : ''}${examEnd.dateDisp} at ${endLabel(examEnd.slot)}` : 'No papers yet'}>
-              {examEnd?.ended ? <FileSpreadsheet size={14} /> : <Lock size={14} />} {exporting ? 'Exporting…' : 'Export Absentees'}
-            </button>
+            <div ref={exportRef} style={{ position: 'relative' }}>
+              <button className="btn btn-sm btn-brass" disabled={!!exporting || !data.rooms.length} onClick={() => setExportOpen((v) => !v)}
+                aria-haspopup="menu" aria-expanded={exportOpen}
+                title="Download attendance as Excel — course-wise lists, totals and charts">
+                <FileSpreadsheet size={14} /> {exporting ? 'Exporting…' : 'Export'} <ChevronDown size={14} />
+              </button>
+              {exportOpen && (
+                <div role="menu" style={{ position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 40, minWidth: 270, background: 'var(--surface,#fff)',
+                  border: '1px solid var(--border,rgba(0,0,0,.12))', borderRadius: 12, boxShadow: '0 14px 36px rgba(0,0,0,.16)', padding: 6 }}>
+                  {[
+                    ['absent', UserX, 'Export Absentees', 'Only absent students, course-wise, with totals'],
+                    ['present', CheckCircle2, 'Export Presentees', 'Only present students, course-wise, with totals'],
+                    ['all', Users, 'Export All', 'Every student marked Present / Absent, totals and charts'],
+                  ].map(([type, Icon, label, hint]) => (
+                    <button key={type} role="menuitem" type="button" onClick={() => exportAs(type)}
+                      style={{ display: 'flex', gap: 10, alignItems: 'flex-start', width: '100%', textAlign: 'left', padding: '9px 10px', border: 0, borderRadius: 8, background: 'transparent', cursor: 'pointer', color: 'inherit' }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2,#f2f8f5)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+                      <Icon size={16} style={{ marginTop: 2, flexShrink: 0, color: type === 'absent' ? '#9c1c1c' : '#0f5132' }} />
+                      <span>
+                        <span style={{ display: 'block', fontWeight: 700, fontSize: 13.5 }}>{label}</span>
+                        <span style={{ display: 'block', fontSize: 11.5, color: 'var(--text-faint,#6c7b72)', marginTop: 1 }}>{hint}</span>
+                      </span>
+                    </button>
+                  ))}
+                  <div style={{ fontSize: 11, color: 'var(--text-faint,#6c7b72)', padding: '6px 10px 4px', borderTop: '1px solid var(--border,#e5ece8)', marginTop: 4 }}>
+                    {level === 'ug' ? 'BS only' : level === 'pg' ? 'MS only' : 'BS + MS'} · latest attendance at the time of download.
+                    {examEnd && !examEnd.ended ? ' Papers not over yet show as “Not yet held”.' : ''}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         }
       />

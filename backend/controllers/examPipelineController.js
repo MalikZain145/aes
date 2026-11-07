@@ -223,6 +223,10 @@ async function runJob(job, opts) {
   try {
     ensureOutputDir();
     const examType = body.examType === 'mids' ? 'mids' : 'finals';
+    try {
+      const arc = await require('../utils/examArchive').archiveConductedExams({ reason: 'exam engine run' });
+      if (arc.length) push(`Archived ${arc.length} conducted exam(s): ${arc.map((x) => x.label).join(', ')}`);
+    } catch (e) { push(`Exam archive skipped: ${e.message}`); }
     // 1) ingest + DB save
     if (uploads.length) {
       job.stage = 'ingest';

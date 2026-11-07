@@ -653,6 +653,11 @@ exports.generateDatesheet = async (req, res) => {
   let exportPath;
   let configPath;
   try {
+    // A fully conducted exam of this semester is archived (datesheets, admit cards,
+    // seating, attendance …) BEFORE anything new is generated — a new datesheet
+    // replaces the old one. Never blocks generation; never changes live data.
+    try { await require('../utils/examArchive').archiveConductedExams({ reason: 'new datesheet generated' }); }
+    catch (e) { console.error('exam archive:', e.message); }
     let {
       examType, startDate, windowMode, papersPerSlot, numDays,
       programLevel, semester, year, mergeGroups, excludeDates, forceMerges,
@@ -1013,6 +1018,11 @@ exports.generateAdmitCards = async (req, res) => {
   const mergedSchedulePaths = [];
   const uploadPath = req.file ? req.file.path : null;
   try {
+    // A fully conducted exam of this semester is archived (datesheets, admit cards,
+    // seating, attendance …) BEFORE anything new is generated — a new datesheet
+    // replaces the old one. Never blocks generation; never changes live data.
+    try { await require('../utils/examArchive').archiveConductedExams({ reason: 'new admit cards generated' }); }
+    catch (e) { console.error('exam archive:', e.message); }
     // The student registration file is OPTIONAL now — if none is uploaded, cards
     // are built straight from the database (StudentRegistration, imported under
     // Import Data). We verify the DB has registrations before running.

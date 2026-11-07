@@ -53,7 +53,7 @@ def metrics(tt):
     m['room_slots_available'] = len(ROOMS) * tt.T
     m['room_utilisation_pct'] = round(100 * len(tt.sessions) / (len(ROOMS) * tt.T), 1)
     rep = tt.report
-    for k in ('room_double_booked', 'teacher_clash', 'student_clash', 'same_day_repeat'):
+    for k in ('room_double_booked', 'teacher_clash', 'student_clash', 'same_day_repeat', 'reserved_room_misuse'):
         m[k] = len(rep.get(k, []))
     m['sessions_over_room_capacity'] = len(rep['over_capacity'])
     m['students_seated_beyond_capacity'] = sum(n - c for _, n, c in rep['over_capacity'])
@@ -127,13 +127,13 @@ def grid_sheet(wb, title, tt, rows_key, rows_label, cell_text, rows_order=None):
 
 def export(students, offerings, sections, results, log):
     payload = {'generated_at': datetime.datetime.now().isoformat(timespec='seconds'),
-               'institution': 'Abasyn University Islamabad Campus', 'term': 'Fall 2026',
+               'institution': 'Abasyn University Islamabad Campus', 'term': CFG.get('term') or 'Fall 2026',
                'rooms': ROOMS, 'timetables': {}}
     wb = Workbook()
     ws = wb.active
     ws.title = 'Summary'
     r = 1
-    ws.cell(row=r, column=1, value='AUIC Theory Timetable - Fall 2026 (generated)').font = Font(bold=True, size=14)
+    ws.cell(row=r, column=1, value=f"AUIC Theory Timetable - {CFG.get('term') or 'Fall 2026'} (generated)").font = Font(bold=True, size=14)
     r += 2
     for name, tt in results.items():
         if not getattr(tt, 'start', None):
@@ -143,6 +143,7 @@ def export(students, offerings, sections, results, log):
         E = entries(tt, offerings)
         M = metrics(tt)
         payload['timetables'][name] = {'days': tt.days, 'slots': tt.slots, 'metrics': M,
+                                       'break_after_slot': tt.spec.get('break_after_slot', -1),
                                        'entries': E}
         ws.cell(row=r, column=1, value=f'{name} timetable').font = Font(bold=True, size=12)
         r += 1

@@ -1,4 +1,60 @@
 {
+ "term": "",
+ "rooms_allowed": [
+  "Auditorium (J-205)",
+  "Main Hall-B(J-Block)",
+  "I-103",
+  "I-105",
+  "I-106",
+  "I-108",
+  "I-109",
+  "I-110",
+  "I-111",
+  "I-112",
+  "I-113",
+  "I-114",
+  "I-201",
+  "I-202",
+  "I-203",
+  "I-204",
+  "I-205",
+  "I-206",
+  "I-208",
+  "I-209",
+  "I-210",
+  "I-211",
+  "I-212",
+  "I-213",
+  "I-214",
+  "I-215",
+  "I-216",
+  "J-209",
+  "J-210",
+  "J-211",
+  "J-214",
+  "J-301",
+  "J-308",
+  "J-310",
+  "J-311",
+  "J-312",
+  "J-313",
+  "J-314",
+  "J-315"
+ ],
+ "rooms_allowed_note": "Timetable rooms (official AUIC timetable). Names match Rooms & Labs ignoring spaces/dashes; \"I-213\" also matches \"I-213A\". Other rooms are not used.",
+ "computing_rooms": [
+  "GP1",
+  "GP2"
+ ],
+ "computing_prefixes": [
+  "CS",
+  "SE",
+  "AI",
+  "DS",
+  "IT"
+ ],
+ "computing_note": "GP1 / GP2 (computer labs) host ONLY computing courses (code starts with a computing prefix), whichever programme takes them.",
+ "reserved_room_bonus": 25,
  "rooms": [
   {
    "name": "Auditorium (J-205)",
@@ -7,21 +63,9 @@
    "type": "classroom"
   },
   {
-   "name": "I-011",
-   "block": "I Block",
-   "cap": 24,
-   "type": "classroom"
-  },
-  {
    "name": "I-103",
    "block": "I Block",
    "cap": 16,
-   "type": "classroom"
-  },
-  {
-   "name": "I-104",
-   "block": "I Block",
-   "cap": 18,
    "type": "classroom"
   },
   {
@@ -239,6 +283,32 @@
    "block": "J Block",
    "cap": 75,
    "type": "classroom"
+  },
+  {
+   "name": "GP1",
+   "block": "GP Labs",
+   "cap": 40,
+   "type": "classroom",
+   "only": [
+    "CS",
+    "SE",
+    "AI",
+    "DS",
+    "IT"
+   ]
+  },
+  {
+   "name": "GP2",
+   "block": "GP Labs",
+   "cap": 40,
+   "type": "classroom",
+   "only": [
+    "CS",
+    "SE",
+    "AI",
+    "DS",
+    "IT"
+   ]
   }
  ],
  "block_min": 4,

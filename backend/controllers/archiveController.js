@@ -9,6 +9,8 @@ const path = require('path');
 const AdmZip = require('adm-zip');
 const GeneratedFile = require('../models/GeneratedFile');
 const { OUTPUT_DIR } = require('../utils/pythonRunner');
+const ExamArchive = require('../models/ExamArchive');
+const examArchive = require('../utils/examArchive');
 
 const KIND_FOLDER = {
   datesheet: 'Date Sheets',
@@ -77,7 +79,8 @@ exports.download = async (req, res) => {
     const term = String(req.query.term || '');
     if (!term) return res.status(400).json({ error: 'term is required.' });
     const recs = await GeneratedFile.find({ archived: true, archivedTerm: term }).lean();
-    if (!recs.length) return res.status(404).json({ error: 'No archived record for this term.' });
+    const exams = await ExamArchive.find({ term }).sort({ startDate: 1 }).lean();
+    if (!recs.length && !exams.length) return res.status(404).json({ error: 'No archived record for this term.' });
 
     const safe = term.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
     const zip = new AdmZip();
@@ -98,6 +101,10 @@ exports.download = async (req, res) => {
         added += 1;
       }
     }
+    for (const a of exams) {
+      added += await examArchive.addExamToZip(zip, a, `${term}/Examinations/${examArchive.folderName(a)}`,
+        { preparedBy: (req.user && req.user.username) || '' });
+    }
     if (!added) zip.addFile(`${term}/README.txt`, Buffer.from(`No files on disk for ${term}.`));
     const buf = zip.toBuffer();
     res.writeHead(200, {
@@ -108,6 +115,61 @@ exports.download = async (req, res) => {
     res.end(buf);
   } catch (e) {
     console.error('archive.download:', e.message);
+    try { res.status(500).json({ error: 'Could not build the ZIP.' }); } catch { /* noop */ }
+  }
+};
+
+/* ═══════════════ Archived examinations (one exam = one folder / ZIP) ═══════════════ */
+
+// GET /api/archive/exams → archived exams grouped by semester
+exports.exams = async (_req, res) => {
+  try {
+    const list = await ExamArchive.find({}).select('-files.fileId').sort({ startDate: -1, createdAt: -1 }).lean();
+    const terms = [];
+    for (const a of list) {
+      let t = terms.find((x) => x.term === a.term);
+      if (!t) { t = { term: a.term, exams: [] }; terms.push(t); }
+      const folders = {};
+      for (const f of a.files || []) folders[f.folder] = (folders[f.folder] || 0) + 1;
+      t.exams.push({ id: a._id, label: a.label, examType: a.examType, round: a.round, startDate: a.startDate, endDate: a.endDate,
+        complete: a.complete !== false, stats: a.stats || {}, folders, createdAt: a.createdAt, reason: a.reason || '' });
+    }
+    res.json({ terms });
+  } catch (e) {
+    console.error('archive.exams:', e.message);
+    res.status(500).json({ error: 'Could not load the archived exams.' });
+  }
+};
+
+// POST /api/archive/exams/run → archive every exam that has completely ended (and is not archived yet)
+exports.runExams = async (_req, res) => {
+  try {
+    const created = await examArchive.archiveConductedExams({ reason: 'archived from Previous Semesters' });
+    res.json({ ok: true, created });
+  } catch (e) {
+    console.error('archive.runExams:', e.message);
+    res.status(500).json({ error: e.message || 'Could not archive the exams.' });
+  }
+};
+
+// GET /api/archive/exams/:id/download → that exam as one ZIP (organised folders)
+exports.downloadExam = async (req, res) => {
+  try {
+    const a = await ExamArchive.findById(req.params.id).lean();
+    if (!a) return res.status(404).json({ error: 'Archived exam not found.' });
+    const zip = new AdmZip();
+    const root = examArchive.safeName(`${a.term} - ${examArchive.folderName(a)}`);
+    await examArchive.addExamToZip(zip, a, root, { preparedBy: (req.user && req.user.username) || '' });
+    const buf = zip.toBuffer();
+    const fname = `${root.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '')}.zip`;
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${fname}"`,
+      'Content-Length': buf.length,
+    });
+    res.end(buf);
+  } catch (e) {
+    console.error('archive.downloadExam:', e.message);
     try { res.status(500).json({ error: 'Could not build the ZIP.' }); } catch { /* noop */ }
   }
 };

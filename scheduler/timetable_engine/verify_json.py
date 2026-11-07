@@ -8,7 +8,7 @@ for name, t in d['timetables'].items():
     for e in E:
         k = (e['day'], e['slot_index'])
         room[k + (e['room'],)] += 1
-        if e['teacher'] != 'TBA': teach[k + (e['teacher'],)] += 1
+        if str(e['teacher']).strip().lower() not in ('tba', 'no teacher', ''): teach[k + (e['teacher'],)] += 1
         for s in e['student_ids']:
             stud[k + (s,)] += 1
             seen[s].add((e['course_code'], e['course_title']))
@@ -29,3 +29,17 @@ for st in raw['students']:
             tot += 1
             if code not in allseen[st['id']]: miss += 1
 print('theory registrations', tot, 'not scheduled', miss)
+# rooms: only the configured rooms, reserved rooms (GP1/GP2) only for their departments, capacity
+cfg = json.load(open('config.json'))
+rooms = {r['name']: r for r in cfg['rooms']}
+for name, t in d['timetables'].items():
+    unknown = sum(1 for e in t['entries'] if e['room'] not in rooms)
+    misuse = 0
+    for e in t['entries']:
+        r = rooms.get(e['room']) or {}
+        only = [str(x).upper() for x in (r.get('only') or [])]
+        pre = (re.match(r'[A-Za-z]+', e['course_code']) or [''])[0].upper()
+        if only and pre not in only:
+            misuse += 1
+    over = sum(1 for e in t['entries'] if e.get('students', 0) > e.get('room_capacity', 10 ** 6))
+    print(name, '| rooms outside list', unknown, '| reserved-room misuse', misuse, '| over capacity', over)

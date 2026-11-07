@@ -20,6 +20,7 @@ router.post('/mark', ctrl.mark);                // switch a student P ⇄ A
 router.post('/add', ctrl.add);                  // add a student who is not on the seating plan
 router.post('/remove-added', ctrl.removeAdded); // undo a hand-added student
 router.get('/student', ctrl.student);           // pre-fill name / degree / batch by reg no
-router.get('/absentees', ctrl.absentees);       // every absent student — after the LAST paper of the exam
+router.get('/absentees', ctrl.absentees);
+router.get('/export', ctrl.exportXlsx);           // Excel: ?type=absent|present|all — live data       // every absent student — after the LAST paper of the exam
 
 module.exports = router;

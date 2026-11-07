@@ -622,3 +622,36 @@ exports.absentees = async (req, res) => {
     res.status(500).json({ error: 'Could not build the absentee list.' });
   }
 };
+
+/* ═══════════════ Export (Absentees · Presentees · All) ═══════════════
+ * GET /api/attendance/export?type=absent|present|all[&level=ug|pg]
+ * Built from the live Attendance collection at the moment of the click, so every
+ * scan and every Exam Cell correction is in the file. A paper that has not ended
+ * yet shows its students as "Not yet held" (never as absent). */
+exports.exportXlsx = async (req, res) => {
+  const ax = require('../utils/attendanceExport');
+  const type = ax.TYPES.includes(String(req.query.type)) ? String(req.query.type) : 'all';
+  const level = normLevel(req.query.level);
+  let out = null;
+  try {
+    const roster = (await allRoster()).filter(levelOk(level));
+    if (!roster.length) return res.status(404).json({ error: 'No papers found for this selection.' });
+    const rows = (await ax.withStatus(roster)).filter(levelOk(level));
+    let heading = '';
+    try {
+      const ids = await currentBatchIds(level);
+      const bs = await GeneratedFile.find({ _id: { $in: ids } }).select('meta.heading examType').lean();
+      heading = [...new Set(bs.map((b) => (b.meta && b.meta.heading) || '').filter(Boolean))].join(' / ');
+      if (!heading && bs[0]) heading = bs[0].examType === 'mids' ? 'Mid Term Examination' : 'Final Term Examination';
+    } catch { /* heading is cosmetic */ }
+    const levelLabel = level === 'ug' ? 'BS / Undergraduate' : level === 'pg' ? 'MS / Postgraduate' : 'All students (BS + MS)';
+    const preparedBy = (req.user && (req.user.displayName || req.user.username)) || '';
+    out = await ax.writeWorkbook(type, rows, { heading: heading || 'Examination', levelLabel, preparedBy, fileTag: level ? level.toUpperCase() : '' });
+    res.setHeader('X-Export-Rows', String((out.stats && out.stats.rows) || 0));
+    res.download(out.path, out.filename, () => { try { require('fs').unlinkSync(out.path); } catch { /* ignore */ } });
+  } catch (e) {
+    if (out) { try { require('fs').unlinkSync(out.path); } catch { /* ignore */ } }
+    console.error('attendance.export:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: e.message || 'Could not build the attendance file.' });
+  }
+};

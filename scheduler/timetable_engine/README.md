@@ -13,7 +13,10 @@ Inputs: `classwise.xls` (Course Registration Report classwise) and `students.xls
 ## config.json
 | key | meaning |
 |---|---|
-| rooms | name, block, cap, type (`classroom` now; add `lab` rooms later) |
+| rooms | name, block, cap, type (`classroom` now; add `lab` rooms later); `only: [prefixes]` reserves a room for those course codes |
+| rooms_allowed | the official timetable rooms; the AMS uses ONLY these (capacities from Rooms & Labs) |
+| computing_rooms / computing_prefixes | GP1 / GP2 — added as rooms reserved for computing courses (CS, SE, AI, DS, IT) |
+| term | printed on the styled sheet ("FALL SEMESTER 2026") |
 | timetables.BS / MS | days, slot times, `break_after_slot`, sessions per theory credit, tags |
 | ms_level_from | course code level >= this (500) goes to the MS weekend timetable |
 | block_min | a cohort with >= this many students in a course moves as a block |
@@ -38,3 +41,10 @@ The BS/MS button in the AMS just switches which `entries` array it renders.
    constraint, and in `assign_rooms()` give lab sessions infinite cost on non-lab rooms.
    A multi-slot session keeps its room across its slots (`carry`), so a theory class can
    use a lab room only when no lab is running there.
+
+## Styled output (render_style.py)
+`Timetable_styled.pdf` / `.xlsx` follow the official AUIC timetable sheet: US-Letter landscape,
+cream header band + Abasyn logo, per-day slot header (green first, light blue after), grey Break
+column, classes as `CODE (SEC)-ABBR-TEACHER [ROOM]` coloured by department (from the students'
+programmes; shared courses = bold black "Common"), an empty lab row per day, and the colour legend.
+Trebuchet MS is used when the machine has it, otherwise Helvetica.
