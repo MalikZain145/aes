@@ -213,6 +213,7 @@ function filterExportByLevel(srcPath, wantPG) {
 // student registrations trimmed to those courses). Returns { path, courseCount }.
 // A datesheet record's program cohort: btech | pg (MS) | bs.
 function datesheetCohort(d) {
+  if (d && d.meta && d.meta.imported) return 'custom';   // ready-made special exam (Datesheet import)
   if (d && d.meta && d.meta.btech) return 'btech';
   if (/post/i.test((d && d.meta && d.meta.programLevel) || '')) return 'pg';
   return 'bs';
@@ -1016,7 +1017,7 @@ exports.generateAdmitCards = async (req, res) => {
   let progressPath = null;
   let mergedSchedulePath = null;
   const mergedSchedulePaths = [];
-  const uploadPath = req.file ? req.file.path : null;
+  let uploadPath = req.file ? req.file.path : null;
   try {
     // A fully conducted exam of this semester is archived (datesheets, admit cards,
     // seating, attendance …) BEFORE anything new is generated — a new datesheet
@@ -1071,6 +1072,25 @@ exports.generateAdmitCards = async (req, res) => {
       return res.status(404).json({ error: 'No valid datesheet found. Generate a datesheet first.' });
     }
     const datesheet = datesheets[0];   // primary → heading / exam type / term
+    // An IMPORTED datesheet (special exam, e.g. a new intake) is issued on its own:
+    // its students come from the registration file saved with it, it is seated in
+    // the chosen exam rooms, and it never needs the BS / B.Tech / MS sheets.
+    const allImported = datesheets.every((d) => d.meta && d.meta.imported);
+    if (!allImported && datesheets.some((d) => d.meta && d.meta.imported)) {
+      return res.status(400).json({ error: 'An imported (special) datesheet is issued on its own — generate its admit cards separately.' });
+    }
+    if (allImported && !uploadPath && datesheet.meta && datesheet.meta.datasetFile) {
+      const dn = path.basename(datesheet.meta.datasetFile);
+      try { await require('../utils/fileStore').ensureLocal(dn); } catch { /* best-effort */ }
+      const src = path.join(OUTPUT_DIR, dn);
+      if (fs.existsSync(src)) {
+        uploadPath = path.join(os.tmpdir(), `acds_${Date.now()}${path.extname(dn) || '.xlsx'}`);
+        fs.copyFileSync(src, uploadPath);
+      }
+    }
+    if (allImported && !uploadPath) {
+      return res.status(400).json({ error: 'The registration file of this imported datesheet was not found — attach it here.' });
+    }
 
     // Each datesheet's frozen schedule JSON (exact dates/times).
     const schedulePaths = datesheets
@@ -1121,6 +1141,19 @@ exports.generateAdmitCards = async (req, res) => {
     if (counts.rooms === 0 && counts.labs === 0) {
       cleanup(exportPath);
       return res.status(400).json({ error: 'No rooms or labs in the database. Add exam venues first.' });
+    }
+    // Exam rooms chosen on the Admit Cards page → seat ONLY in those (by name).
+    let examRooms = (req.body || {}).examRooms;
+    if (typeof examRooms === 'string') { try { examRooms = JSON.parse(examRooms); } catch { examRooms = []; } }
+    examRooms = Array.isArray(examRooms) ? examRooms.map((x) => String(x).trim()).filter(Boolean) : [];
+    if (examRooms.length) {
+      const want = new Set(examRooms.map((x) => x.toLowerCase()));
+      const raw = JSON.parse(fs.readFileSync(exportPath, 'utf-8'));
+      let hit = 0;
+      for (const r of (raw.rooms || [])) { r.examVenue = want.has(String(r.name || '').trim().toLowerCase()); if (r.examVenue) hit++; }
+      for (const l of (raw.labs || [])) { l.examVenue = want.has(String(l.name || '').trim().toLowerCase()); if (l.examVenue) hit++; }
+      if (!hit) { cleanup(exportPath); return res.status(400).json({ error: 'None of the chosen exam rooms exists under Rooms & Labs.' }); }
+      fs.writeFileSync(exportPath, JSON.stringify(raw));
     }
 
     const examType = datesheet.examType || dsConfig.examType || 'finals';
@@ -1174,7 +1207,7 @@ exports.generateAdmitCards = async (req, res) => {
     // (previously only the first BS sheet was used).
     let dsByCohort = {};
     const _sheetsByCohort = {};
-    for (const d of datesheets) {
+    for (const d of (allImported ? [] : datesheets)) {
       const tag = datesheetCohort(d);
       const sf = d.meta && d.meta.scheduleFile;
       const p = sf && path.join(OUTPUT_DIR, path.basename(sf));
@@ -1377,6 +1410,8 @@ exports.generateAdmitCards = async (req, res) => {
       },
       meta: {
         cohort: thisCohort,   // bs | btech | pg — drives the BS/B.Tech/MS toggles
+        ...(allImported ? { special: true, importedDatesheetIds: datesheets.map((d) => d._id), label: datesheet.meta && datesheet.meta.label } : {}),
+        ...(examRooms.length ? { examRooms } : {}),
         invigilatorsBySession: result.invigilators_by_session || {},   // for cross-cohort invig de-clash
         invigilatorDayLoad: result.invigilator_day_load || {},         // for cross-cohort ≤2/day cap
         clashCount: result.clash_count || 0,

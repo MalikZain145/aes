@@ -638,6 +638,7 @@ export default function DateSheets() {
         title="Date Sheets"
         subtitle="Produce a clash-free exam datesheet in the official Abasyn format. Configure the exam, then choose whether to merge shared-paper courses."
       />
+      <ImportDatesheetCard onDone={loadHistory} />
 
       <div className="ds-grid">
         {/* ── Configuration card ── */}
@@ -1398,5 +1399,76 @@ function RefreshDatesheet({ record, onClose, onDone }) {
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+/* Ready-made datesheet for a SPECIAL exam (e.g. a new intake's mid-terms): the
+   agreed plan (Date | Time | Course code(s) | Course name) + the registration file
+   of exactly those students. Checked for clashes, then saved as a normal datesheet —
+   admit cards are issued for it from the Admit Cards page. Nothing else changes. */
+function ImportDatesheetCard({ onDone }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [plan, setPlan] = useState(null);
+  const [data, setData] = useState(null);
+  const [label, setLabel] = useState('');
+  const [examType, setExamType] = useState('mids');
+  const [semester, setSemester] = useState('Fall');
+  const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [clashes, setClashes] = useState([]);
+  const submit = async () => {
+    if (!plan || !data) { toast.error('Choose both files.'); return; }
+    setBusy(true); setClashes([]);
+    try {
+      const f = new FormData();
+      f.append('plan', plan); f.append('dataset', data);
+      f.append('label', label); f.append('examType', examType); f.append('semester', semester); f.append('year', year); f.append('note', note);
+      const r = await api.post('/generate/datesheet-import', f, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10 * 60 * 1000 });
+      toast.success(`Datesheet imported — ${r.data.papers} papers, ${r.data.students} students, ${r.data.days} days.`
+        + (r.data.skippedNoStudents?.length ? ` No students for: ${r.data.skippedNoStudents.join(', ')}.` : ''));
+      setOpen(false); setPlan(null); setData(null); onDone && onDone();
+    } catch (err) {
+      setClashes(err?.response?.data?.clashes || []);
+      toast.error(errMsg(err, 'Could not import the datesheet.'));
+    } finally { setBusy(false); }
+  };
+  const lbl = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, fontWeight: 600 };
+  return (
+    <>
+      <div className="card" style={{ padding: '10px 14px', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <FileSpreadsheet size={16} color="#0f5132" />
+        <span style={{ fontSize: 13, flex: 1, minWidth: 220 }}>Special exam with a datesheet already agreed (e.g. a new intake)? Import it — admit cards, seating and QR codes are then made as usual.</span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}><Upload size={13} /> Import datesheet</button>
+      </div>
+      <Modal open={open} onClose={() => setOpen(false)} title="Import a ready-made datesheet" width={600}>
+        <div style={{ fontSize: 12.5, color: 'var(--text-faint,#6c7b72)', marginBottom: 12, lineHeight: 1.5 }}>
+          <b>Datesheet file</b>: columns <b>Date</b>, <b>Time</b>, <b>Course code(s)</b> (and Course name). One row per paper; codes in one row
+          (e.g. <code>SS104 / SS113 / ENG101</code>) are one merged paper. <b>Registration file</b>: the ERP registration report of only the students of this exam.
+          Nothing is saved if any student has two papers at the same time or on the same day.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <label style={lbl}>Datesheet (.xlsx)<input type="file" accept=".xlsx,.xls" onChange={(e) => setPlan(e.target.files[0] || null)} /></label>
+          <label style={lbl}>Registration file (.xlsx/.xls)<input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setData(e.target.files[0] || null)} /></label>
+          <label style={lbl}>Name on the datesheet<input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Fall 2026 Intake" /></label>
+          <label style={lbl}>Exam<select className="input" value={examType} onChange={(e) => setExamType(e.target.value)}><option value="mids">Mid Term</option><option value="finals">Final Term</option></select></label>
+          <label style={lbl}>Semester<select className="input" value={semester} onChange={(e) => setSemester(e.target.value)}><option>Fall</option><option>Spring</option><option>Summer</option></select></label>
+          <label style={lbl}>Year<input className="input" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, '').slice(0, 4))} /></label>
+          <label style={{ ...lbl, gridColumn: '1 / -1' }}>Note at the bottom of every page (optional)
+            <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The midterm exams of the following courses will be held during the class time …" />
+          </label>
+        </div>
+        {clashes.length > 0 && (
+          <div style={{ marginTop: 12, maxHeight: 160, overflow: 'auto', fontSize: 12, fontFamily: 'ui-monospace,monospace', background: '#fff5f5', padding: 8, borderRadius: 8 }}>
+            {clashes.map((c, i) => <div key={i}>{c.sid} {c.name} — {c.kind} {c.when}: {c.papers.join(' + ')}</div>)}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+          <button type="button" className="btn btn-primary" disabled={busy || !plan || !data} onClick={submit}>{busy ? <><Loader2 size={14} className="spin" /> Importing…</> : <><Upload size={14} /> Import</>}</button>
+        </div>
+      </Modal>
+    </>
   );
 }

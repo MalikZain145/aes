@@ -2388,8 +2388,19 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
     story.append(tbl)
 
     # ---- footer with page numbers + Examination Office AUIC ----------------
+    # optional note printed at the bottom of EVERY page (e.g. papers held in class)
+    note = str(meta.get("footer_note") or "").strip()
+    note_para = None
+    if note:
+        note_style = ParagraphStyle("footNote", fontName="Helvetica", fontSize=7.8, leading=9.6, textColor=_INK, alignment=TA_LEFT)
+        note_para = Paragraph(note.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br/>"), note_style)
+
     def _footer(canvas, doc_):
         canvas.saveState()
+        if note_para is not None:
+            w = page[0] - 2.2 * cm - 5.2 * cm
+            _w, h = note_para.wrap(w, 4 * cm)
+            note_para.drawOn(canvas, 1.1 * cm, 0.7 * cm)
         canvas.setFont("Helvetica-Bold", 9)
         canvas.drawRightString(page[0] - 1.1 * cm, 1.15 * cm, "Examination Office AUIC")
         canvas.setFont("Helvetica", 8)
@@ -2399,7 +2410,7 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
 
     doc = SimpleDocTemplate(
         output_path, pagesize=page,
-        topMargin=1.0 * cm, bottomMargin=1.6 * cm,
+        topMargin=1.0 * cm, bottomMargin=(1.6 * cm if not note_para else 1.0 * cm + note_para.wrap(page[0] - 7.4 * cm, 4 * cm)[1] + 0.5 * cm),
         leftMargin=1.1 * cm, rightMargin=1.1 * cm,
         title=heading,
     )
@@ -2639,6 +2650,7 @@ def export_schedule_json(schedule, dates, slots, meta, out_path):
         # courses with no written paper on THIS sheet (FYP/thesis/labs/…, admin
         # removals) — the auditor uses it to tell "excluded" from "missing".
         "excluded_codes": list(meta.get("excluded_codes") or []),
+        "footer_note": meta.get("footer_note") or "",
     }
     sched_path = out_path.rsplit(".", 1)[0] + "_schedule.json"
     with open(sched_path, "w", encoding="utf-8") as f:
@@ -3336,6 +3348,7 @@ def render_edited(config: dict) -> dict:
         "program_level": data.get("program_level"),
         "semester": data.get("semester"), "year": data.get("year"),
         "excluded_codes": data.get("excluded_codes") or [],
+        "footer_note": data.get("footer_note") or "",
     }
     out = config["out"]
     generate_pdf(schedule, dates, slots, meta, out)

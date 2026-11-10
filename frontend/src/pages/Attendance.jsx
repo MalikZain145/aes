@@ -584,7 +584,7 @@ function SheetImportModal({ open, onClose, onDone }) {
     try {
       const r = await api.post('/attendance/sheet-import', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 });
       setRep(r.data);
-      if (!dry) { toast.success(`Applied: ${r.data.presentNew} marked present, ${r.data.bookletFilled} booklet numbers saved.`); await onDone(); }
+      if (!dry) { toast.success(`Applied: ${r.data.presentNew} marked present, ${r.data.addedNew || 0} added, ${r.data.bookletFilled} booklet numbers saved.`); await onDone(); }
     } catch (err) { toast.error(errMsg(err, 'Could not read the Excel file.')); }
     finally { setBusy(''); }
   };
@@ -594,7 +594,7 @@ function SheetImportModal({ open, onClose, onDone }) {
     <Modal open={open} onClose={onClose} title="Import identification sheets" width={640}>
       <div style={{ fontSize: 12.5, color: 'var(--text-faint,#6c7b72)', marginBottom: 12, lineHeight: 1.5 }}>
         Upload the reviewed identification-sheet Excel (sheet <b>Import</b>). <b>Check</b> shows what will change; nothing is saved until you press <b>Apply</b>.
-        A student whose admit card was scanned stays Present; rows still marked CHECK are skipped.
+        A student whose admit card was scanned stays Present; rows still marked CHECK are skipped. Students written by hand under a list are added only where “Add to list” is YES.
       </div>
       <input type="file" accept=".xlsx,.xls" onChange={(e) => { setFile(e.target.files[0] || null); setRep(null); }} />
       {rep && (
@@ -602,6 +602,7 @@ function SheetImportModal({ open, onClose, onDone }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: 8 }}>
             {n(rep.rows, 'rows read', '#0f5132')}
             {n(rep.presentNew, 'new Present', '#0f5132')}
+            {n(rep.addedNew || 0, 'added (hand-written)', '#0f5132')}
             {n(rep.bookletFilled, 'booklet numbers', '#084298')}
             {n(rep.alreadyPresent, 'already Present', '#41464b')}
             {n(rep.conflicts.length, 'conflicts (not changed)', '#9c1c1c')}
@@ -623,7 +624,7 @@ function SheetImportModal({ open, onClose, onDone }) {
         <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
         <button type="button" className="btn btn-ghost" disabled={!file || !!busy} onClick={() => send(true)}>{busy === 'check' ? 'Checking…' : 'Check'}</button>
         <button type="button" className="btn btn-primary" disabled={!file || !!busy || !rep || !rep.dryRun || !rep.writes}
-          onClick={() => { if (window.confirm(`Save ${rep.presentNew} new Present marks and ${rep.bookletFilled} booklet numbers?`)) send(false); }}>
+          onClick={() => { if (window.confirm(`Save ${rep.presentNew} new Present marks, ${rep.addedNew || 0} hand-written students and ${rep.bookletFilled} booklet numbers?`)) send(false); }}>
           <Upload size={14} /> {busy === 'apply' ? 'Applying…' : 'Apply'}
         </button>
       </div>

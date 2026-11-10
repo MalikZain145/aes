@@ -24,10 +24,21 @@ const GeneratedFile = require('../models/GeneratedFile');
 // tracked and downloaded SEPARATELY.
 async function currentBatchIds(level) {
   const batches = await GeneratedFile.find({ kind: 'admit_cards', archived: { $ne: true } })
-    .sort({ createdAt: -1 }).select('title meta.programLevel createdAt').lean();
+    .sort({ createdAt: -1 }).select('title meta.programLevel meta.special meta.importedDatesheetIds createdAt').lean();
   const seen = new Set();
   const ids = [];
+  // Special exams (imported datesheet, e.g. a new intake's mid-terms) run ALONGSIDE
+  // the regular exam: they never replace it. Latest batch per imported datesheet.
+  const seenSpecial = new Set();
   for (const b of batches) {
+    if (!(b.meta && b.meta.special)) continue;
+    const k = ((b.meta.importedDatesheetIds || []).map(String).sort().join(',')) || String(b._id);
+    const lvl = /post/i.test(b.meta.programLevel || '') ? 'pg' : 'ug';
+    if (level && lvl !== level) continue;
+    if (!seenSpecial.has(k)) { seenSpecial.add(k); ids.push(b._id); }
+  }
+  for (const b of batches) {
+    if (b.meta && b.meta.special) continue;
     const lvl = (b.meta && b.meta.programLevel) || (/postgrad/i.test(b.title || '') ? 'Postgraduate' : 'Undergraduate');
     const key = /post/i.test(lvl) ? 'pg' : 'ug';
     if (level && key !== level) continue;
@@ -737,12 +748,14 @@ exports.sheetImport = async (req, res) => {
     const H = grid[hi].map((c) => String(c).trim().toLowerCase());
     const col = (re) => H.findIndex((h) => re.test(h));
     const C = { date: col(/^date/), slot: col(/^(time|slot)/), code: col(/^course/), room: col(/^room/), sid: col(/^reg\s*no/),
-      mark: col(/^mark/), booklet: col(/^booklet/), ref: col(/^source|^page/) };
+      mark: col(/^mark/), booklet: col(/^booklet\s*no/), ref: col(/^source|^page/), add: col(/^add/), name: col(/^student\s*name|^name/) };
     for (const k of ['date', 'slot', 'code', 'room', 'sid', 'mark']) if (C[k] < 0) return res.status(400).json({ error: `Column "${k}" is missing in sheet "${wsName}".` });
 
     const roster = await fullRoster({});
     const onList = new Map(roster.map((r) => [`${r.studentId}|${r.code}|${r.date}|${r.slot}`, r]));
-    const rep = { rows: 0, presentNew: 0, bookletFilled: 0, alreadyPresent: 0, absentNoChange: 0, conflicts: [], skipped: [], notOver: 0 };
+    const paperOf = new Map(roster.map((r) => [`${r.code}|${r.date}|${r.slot}`, r]));
+    const person = new Map(roster.map((r) => [r.studentId, r]));
+    const rep = { rows: 0, presentNew: 0, addedNew: 0, bookletFilled: 0, alreadyPresent: 0, absentNoChange: 0, conflicts: [], skipped: [], notOver: 0 };
     const who = (req.user && req.user.username) || '';
     const ops = [];
     for (let i = hi + 1; i < grid.length; i++) {
@@ -756,10 +769,25 @@ exports.sheetImport = async (req, res) => {
       const booklet = C.booklet >= 0 ? String(g[C.booklet] ?? '').trim().replace(/\.0$/, '').replace(/\s+/g, '').slice(0, 20) : '';
       const ref = C.ref >= 0 ? String(g[C.ref] ?? '').trim().slice(0, 80) : '';
       if (!['P', 'A'].includes(mark)) { rep.skipped.push({ row: excelRow, sid, reason: 'Mark is not P or A (resolve the CHECK first)' }); continue; }
-      const r = onList.get(`${sid}|${code}|${date}|${slot}`);
-      if (!r) { rep.skipped.push({ row: excelRow, sid, reason: `Not on the ${code || '?'} list for ${date || '?'} ${slot || '?'}` }); continue; }
+      let r = onList.get(`${sid}|${code}|${date}|${slot}`);
+      let add = false;
+      if (!r) {
+        // A student the invigilator wrote by hand under the printed list ("Add to list" = YES)
+        const wantAdd = C.add >= 0 && /^y/i.test(String(g[C.add] ?? '').trim());
+        const paper = paperOf.get(`${code}|${date}|${slot}`);
+        if (!(wantAdd && paper && mark === 'P' && /^[A-Za-z0-9-]{2,20}$/.test(sid))) {
+          rep.skipped.push({ row: excelRow, sid, reason: `Not on the ${code || '?'} list for ${date || '?'} ${slot || '?'}${wantAdd && !paper ? ' (no such paper)' : ''}` });
+          continue;
+        }
+        const who2 = person.get(sid) || {};
+        const room = C.room >= 0 ? String(g[C.room] ?? '').trim().slice(0, 60) : '';
+        const name = (C.name >= 0 ? String(g[C.name] ?? '').trim().slice(0, 100) : '') || who2.name || '';
+        r = { studentId: sid, name, program: who2.program || '', batch: who2.batch || '', code, courseName: paper.courseName || '',
+          date, slot, room: room || paper.room, seat: '', section: '' };
+        add = true;
+      }
       if (!isFinal(date, slot)) { rep.notOver++; rep.skipped.push({ row: excelRow, sid, reason: 'Paper not over yet' }); continue; }
-      ops.push({ excelRow, r, sid, code, date, slot, mark, booklet, ref });
+      ops.push({ excelRow, r, sid, code, date, slot, mark, booklet, ref, add });
     }
     const keys = ops.map((o) => ({ studentId: o.sid, code: o.code, date: o.date, slot: o.slot }));
     const existing = new Map();
@@ -785,11 +813,11 @@ exports.sheetImport = async (req, res) => {
           writes.push({ updateOne: { filter, update: { $set: { booklet: o.booklet, sheetRef: o.ref } } } });
         }
       } else if (o.mark === 'P') {
-        rep.presentNew++;
+        if (o.add) rep.addedNew++; else rep.presentNew++;
         writes.push({ updateOne: { filter, upsert: true, update: { $setOnInsert: {
           name: o.r.name, program: o.r.program, batch: o.r.batch || '', courseName: o.r.courseName, room: o.r.room, seat: o.r.seat,
           section: o.r.section || '', status: 'present', source: 'sheet', scannedAt: null, booklet: o.booklet, sheetRef: o.ref,
-          editedBy: who, editedAt: new Date() } } } });
+          added: !!o.add, editedBy: who, editedAt: new Date() } } } });
       } else rep.absentNoChange++;
     }
     rep.writes = writes.length;
@@ -797,7 +825,7 @@ exports.sheetImport = async (req, res) => {
     if (!dryRun && writes.length) {
       for (let i = 0; i < writes.length; i += 500) await Attendance.bulkWrite(writes.slice(i, i + 500), { ordered: false });
       bumpCache();
-      try { await require('../utils/logger').logActivity('attendance.sheetImport', `Identification sheets: ${rep.presentNew} marked present, ${rep.bookletFilled} booklet numbers, ${rep.conflicts.length} conflicts`, 'info'); } catch { /* optional */ }
+      try { await require('../utils/logger').logActivity('attendance.sheetImport', `Identification sheets: ${rep.presentNew} marked present, ${rep.addedNew} added from hand-written entries, ${rep.bookletFilled} booklet numbers, ${rep.conflicts.length} conflicts`, 'info'); } catch { /* optional */ }
     }
     rep.conflicts = rep.conflicts.slice(0, 2000); rep.skipped = rep.skipped.slice(0, 2000);
     res.json(rep);

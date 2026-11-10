@@ -3,6 +3,7 @@ const multer = require('multer');
 const os = require('os');
 const ctrl = require('../controllers/generateController');
 const ed = require('../controllers/datesheetEditorController');
+const dsImport = require('../controllers/datesheetImportController');
 const requireAuth = require('../middleware/auth');
 
 // Uploads for one-off datesheet generation go to a temp dir and are deleted
@@ -27,6 +28,13 @@ router.post('/datesheet', admin, ctrl.generateDatesheet);
 router.post('/datesheet-from-file', admin, upload.single('dataset'), ctrl.generateDatesheetFromFile);
 // Generate per-student admit cards + seating plan from an uploaded registration file.
 router.post('/admit-cards', adminOrFinance, upload.single('dataset'), ctrl.generateAdmitCards);
+// Ready-made datesheet (special exam, e.g. a new intake): plan Excel + registration file → datesheet record
+router.post('/datesheet-import', admin, (req, res) => {
+  upload.fields([{ name: 'plan', maxCount: 1 }, { name: 'dataset', maxCount: 1 }])(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    dsImport.importDatesheet(req, res);
+  });
+});
 // Live progress for the admit-card counter (polled during generation).
 router.get('/admit-cards/progress/:token', adminOrFinance, ctrl.getAdmitCardsProgress);
 router.get('/admit-card/find', adminOrFinance, ctrl.findStudentCard);

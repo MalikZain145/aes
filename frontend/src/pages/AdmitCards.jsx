@@ -131,6 +131,7 @@ export default function AdmitCards() {
 
   // A datesheet's cohort: pg (MS), btech (B.Tech / Engineering Technology), or bs.
   const dsCohort = (d) => {
+    if (d?.meta?.imported) return 'custom';   // ready-made special exam — issued on its own (panel below)
     const s = `${d?.meta?.programLevel || ''} ${d?.title || ''}`.toLowerCase();
     if (/post|mphil|\bms\b|master/.test(s)) return 'pg';
     if (/b\.?\s*tech|engineering tech|\btech\b/.test(s)) return 'btech';
@@ -271,6 +272,11 @@ export default function AdmitCards() {
         <div className="ac-how-item"><Armchair size={16} /> <span>2 students per bench — different degree, or different batch <b>and</b> paper. Never the same paper.</span></div>
         <div className="ac-how-item"><ClipboardList size={16} /> <span>One generation produces the full exam pack: <b>Admit Cards</b>, <b>Seating Plan</b>, <b>Identification Sheets</b> (attendance list per room &amp; course) and the <b>Invigilation Roster</b> — seats &amp; times match the admit card exactly.</span></div>
       </div>
+
+      {datesheets.some((d) => d.meta?.imported) && (
+        <SpecialExamPanel datesheets={datesheets.filter((d) => d.meta?.imported)} campusLine={campusLine} includeLabs={includeLabs}
+          onDone={(res) => { setResult(res.data.result); setResultRecord(res.data.record || null); loadHistory(); }} />
+      )}
 
       {datesheets.length === 0 ? (
         <div className="card" style={{ padding: 24 }}>
@@ -604,6 +610,83 @@ export default function AdmitCards() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* Special exam (imported datesheet, e.g. a new intake's mid-terms): its own admit
+   cards, seated only in the rooms ticked here. The regular exam is not touched. */
+function SpecialExamPanel({ datesheets, campusLine, includeLabs, onDone }) {
+  const toast = useToast();
+  const [dsId, setDsId] = useState(datesheets[0]?._id || '');
+  const [rooms, setRooms] = useState([]);
+  const [picked, setPicked] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(0);
+  useEffect(() => { if (!datesheets.some((d) => d._id === dsId)) setDsId(datesheets[0]?._id || ''); }, [datesheets]); // eslint-disable-line
+  useEffect(() => {
+    api.get('/rooms-labs/rooms').then((r) => setRooms(r.data.items || [])).catch(() => setRooms([]));
+  }, []);
+  const ds = datesheets.find((d) => d._id === dsId);
+  // rooms suggested with the imported datesheet are ticked by default
+  useEffect(() => {
+    const want = (ds?.meta?.examRooms || []).map((x) => String(x).toLowerCase());
+    if (want.length && rooms.length) setPicked(rooms.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
+  }, [dsId, rooms.length]); // eslint-disable-line
+  const seats = (r) => (r.examCapacity ? r.examCapacity * 2 : (r.capacity || 0));
+  const total = rooms.filter((r) => picked.includes(r.name)).reduce((n, r) => n + seats(r), 0);
+  const toggle = (n) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
+  const generate = async () => {
+    if (!dsId) return;
+    if (!picked.length && !window.confirm('No exam room ticked — seat the students in ALL rooms?')) return;
+    setBusy(true); setDone(0);
+    const token = (window.crypto?.randomUUID?.() || `t${Date.now()}${Math.random()}`).replace(/[^a-zA-Z0-9-]/g, '');
+    const poll = setInterval(async () => {
+      try { const p = await api.get(`/generate/admit-cards/progress/${token}`); if (typeof p.data.done === 'number') setDone(p.data.done); } catch { /* ignore */ }
+    }, 500);
+    try {
+      const form = new FormData();
+      form.append('datesheetIds', JSON.stringify([dsId]));
+      form.append('cohort', 'all');
+      form.append('campusLine', campusLine || '');
+      form.append('includeLabs', includeLabs ? 'true' : 'false');
+      form.append('progressToken', token);
+      form.append('examRooms', JSON.stringify(picked));
+      const res = await api.post('/generate/admit-cards', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60 * 60 * 1000 });
+      const r = res.data.result || {};
+      if (r.unseated_count) toast.error(`${r.unseated_count} paper-seat(s) could not be seated — the ticked rooms are too small.`);
+      else toast.success(`${r.admit_cards} admit cards generated for ${ds?.meta?.label || 'the special exam'}.`);
+      onDone(res);
+    } catch (err) { toast.error(errMsg(err, 'Admit-card generation failed.')); }
+    finally { clearInterval(poll); setBusy(false); }
+  };
+  return (
+    <div className="card" style={{ padding: 18, marginBottom: 16, border: '1px solid #c9a227' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <Sparkles size={16} color="#9a7a12" /><b>Special exam (imported datesheet)</b>
+      </div>
+      <p className="ds-source-note" style={{ marginTop: 0 }}>
+        Cards for the students of the imported datesheet only, seated in the rooms you tick. The regular exam's cards, seating and attendance stay as they are; earlier cards keep their own status.
+      </p>
+      <select className="input" value={dsId} onChange={(e) => setDsId(e.target.value)} style={{ maxWidth: 560 }}>
+        {datesheets.map((d) => <option key={d._id} value={d._id}>{d.title}{d.meta?.students ? ` · ${d.meta.students} students` : ''}</option>)}
+      </select>
+      <div style={{ marginTop: 12, fontSize: 13, fontWeight: 700 }}>Exam rooms <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {picked.length ? `${picked.length} ticked · ${total} seats` : 'none ticked (all rooms)'}</span></div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxHeight: 180, overflow: 'auto' }}>
+        {rooms.map((r) => (
+          <label key={r._id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, padding: '4px 8px', borderRadius: 8, cursor: 'pointer',
+            border: `1px solid ${picked.includes(r.name) ? '#0f5132' : 'var(--border,#ddd)'}`, background: picked.includes(r.name) ? '#e7f3ec' : 'transparent' }}>
+            <input type="checkbox" checked={picked.includes(r.name)} onChange={() => toggle(r.name)} />
+            {r.name} <span style={{ color: 'var(--muted)' }}>({seats(r)})</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+        <button type="button" className="btn btn-primary" disabled={busy || !dsId} onClick={generate}>
+          {busy ? <><Loader2 size={14} className="spin" /> Generating… {done ? `${done} cards` : ''}</> : <><Sparkles size={14} /> Generate admit cards</>}
+        </button>
+        {ds && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{ds.meta?.startDate} → {ds.meta?.endDate} · {ds.summary?.papers} papers</span>}
+      </div>
     </div>
   );
 }

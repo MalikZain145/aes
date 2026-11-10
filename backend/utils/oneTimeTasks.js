@@ -10,6 +10,8 @@
  *   2026-10-12.staff-usernames   Exam Cell login  → examination@abasynisb.edu.pk
  *                                Finance login    → finance@abasynisb.edu.pk
  *                                (passwords are not touched)
+ *   2026-11-10.fall26-intake-mids  import the Fall 2026 intake Mid Term datesheet (special
+ *                                exam, 30 Nov – 05 Dec) from backend/data/imports/2026-11-10/.
  *   2026-10-14.import-data       replace the student / course data with the 14 Oct 2026
  *                                Course Registration Reports and load the faculty rosters
  *                                (Faculty_List + All_Faculity): 4-digit Faculty IDs, faculty
@@ -981,6 +983,32 @@ async function feePaidManual20261022() {
   return `${n} admit card(s) set to "${FEE_VERIFIED}"`;
 }
 
+
+// Fall 2026 intake — Mid Term datesheet (30 Nov – 05 Dec 2026), agreed with the exam
+// office on 10 Nov 2026. Imported (not generated) from backend/data/imports/2026-11-10/:
+// datesheet.xlsx (62 papers, Mon–Fri 03:00-04:30, Sat 09:00-10:30, one paper per student
+// per day) + registrations.xlsx (the 340 students and their final courses). Exam rooms:
+// Main Hall-B, Auditorium, J-209, J-210, J-211, J-214. Admit cards are then issued from
+// the Admit Cards page (Special exam). Nothing else is changed.
+async function fall26IntakeMids20261110() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const have = await GeneratedFile.findOne({ kind: 'datesheet', 'meta.imported': true, 'meta.label': 'Fall 2026 Intake' }).lean();
+  if (have) return 'already imported';
+  const dir = path.join(__dirname, '..', 'data', 'imports', '2026-11-10');
+  const plan = path.join(dir, 'datesheet.xlsx'); const data = path.join(dir, 'registrations.xlsx');
+  if (!fs.existsSync(plan) || !fs.existsSync(data)) throw new Error(`files not found in ${dir} — use Date Sheets → Import datesheet instead`);
+  const r = await require('../controllers/datesheetImportController').importPlan({
+    planFile: { path: plan, originalname: 'datesheet.xlsx' },
+    dataFile: { path: data, originalname: 'registrations.xlsx' },
+    body: {
+      label: 'Fall 2026 Intake', examType: 'mids', semester: 'Fall', year: '2026',
+      note: 'Note: The midterm exams of the following courses will be held during the class time from December 7, 2026 to December 11, 2026. The concerned course instructor will announce the date of the exam: LT102 Human Physiology, SU101 Medical Biochemistry-I, VS103 Biochemistry, VS105 Introduction to Optometry, RT101 Medical Biochemistry-I, MT100 Basic Mathematics.',
+      examRooms: ['Main Hall-B(J-Block)', 'Auditorium (J-205)', 'J-209', 'J-210', 'J-211', 'J-214'],
+    },
+  });
+  return `imported Fall 2026 intake mids datesheet: ${r.papers} papers, ${r.students} students, ${r.days} days`;
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1009,6 +1037,7 @@ const TASKS = [
   ['2026-10-19.se432-with-cs432', se432WithCs432_20261019],
   ['2026-10-20.add-7319-cs412-a', addAlina7319_20261020],
   ['2026-10-22.fee-paid-verified-manually', feePaidManual20261022],
+  ['2026-11-10.fall26-intake-mids', fall26IntakeMids20261110],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 
