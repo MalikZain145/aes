@@ -376,7 +376,10 @@ def build(data, out_path):
 
     # ───────────── Course-wise ─────────────
     show_status = kind == "all"
+    show_book = kind != "absent"          # answer-booklet numbers (written on the identification sheets)
     cols = ["S.No", "Reg No", "Student Name", "Degree / Batch", "Sec", "Date", "Time", "Room", "Seat"]
+    if show_book:
+        cols.append("Booklet No.")
     if show_status:
         cols.append("Status")
     cw = wb.create_sheet("Course-wise")
@@ -394,11 +397,13 @@ def build(data, out_path):
             for i, r in enumerate(lst):
                 vals = [i + 1, r.get("studentId"), r.get("name"), r.get("batch") or r.get("program"),
                         r.get("section") or "", r.get("dateDisp"), time_label(r.get("slot")), r.get("room"), r.get("seat")]
+                if show_book:
+                    vals.append(r.get("booklet") or "")
                 fills = None
                 if show_status:
                     vals.append(STATUS_TEXT[r["status"]])
                     fills = {len(vals) - 1: STATUS_FILL[r["status"]]}
-                W.tr(vals, i, center=(0, 1, 4, 5, 6, 7, 8, 9), fills=fills)
+                W.tr(vals, i, center=(0, 1, 4, 5, 6, 7, 8, 9, 10), fills=fills)
         else:
             W.merged({"absent": "No absentee in this course.", "present": "No student present in this course yet.",
                       "all": "No students."}[kind], F_NOTE)
@@ -408,22 +413,26 @@ def build(data, out_path):
         W.blank()
     W.total(["GRAND TOTAL", f"{len(courses)} courses", f"Total Present: {tot_p}", f"Total Absent: {tot_a}",
              "", f"Expected: {tot_exp}", f"Attendance: {pct(tot_p, held) * 100:.1f}%" if held else ""], grand=True)
-    widths(cw, [7, 15, 30, 40, 6, 13, 18, 14, 8, 13][:len(cols)])
+    widths(cw, ([7, 15, 30, 40, 6, 13, 18, 14, 8] + ([13] if show_book else []) + [13])[:len(cols)])
     page_setup(cw)
 
     # ───────────── List ─────────────
     lname = {"absent": "All Absentees", "present": "All Presentees", "all": "All Students"}[kind]
     ls = wb.create_sheet(lname)
     lcols = ["S.No", "Date", "Day", "Time", "Course", "Course Name", "Room", "Seat", "Reg No", "Student Name",
-             "Degree / Batch", "Sec", "Status", "Note"]
+             "Degree / Batch", "Sec"] + (["Booklet No."] if show_book else []) + ["Status", "Note"]
+    st_col = len(lcols) - 2
     W = Writer(ls, len(lcols))
     W.header(f"{heading} — {lname}", sub)
     hr = W.th(lcols)
     for i, r in enumerate(shown):
-        W.tr([i + 1, r.get("dateDisp"), r.get("day"), time_label(r.get("slot")), r.get("code"), r.get("courseName"),
-              r.get("room"), r.get("seat"), r.get("studentId"), r.get("name"), r.get("batch") or r.get("program"),
-              r.get("section") or "", STATUS_TEXT[r["status"]], r.get("note") or ""],
-             i, center=(0, 1, 2, 3, 4, 6, 7, 8, 11, 12), fills={12: STATUS_FILL[r["status"]]})
+        vals = [i + 1, r.get("dateDisp"), r.get("day"), time_label(r.get("slot")), r.get("code"), r.get("courseName"),
+                r.get("room"), r.get("seat"), r.get("studentId"), r.get("name"), r.get("batch") or r.get("program"),
+                r.get("section") or ""]
+        if show_book:
+            vals.append(r.get("booklet") or "")
+        vals += [STATUS_TEXT[r["status"]], r.get("note") or ""]
+        W.tr(vals, i, center=(0, 1, 2, 3, 4, 6, 7, 8, 11, 12, st_col), fills={st_col: STATUS_FILL[r["status"]]})
     last = W.r - 1
     if shown:
         ls.auto_filter.ref = f"A{hr}:{get_column_letter(len(lcols))}{last}"
@@ -434,7 +443,7 @@ def build(data, out_path):
     if tot_n:
         W.total(["NOT YET HELD", "", "", tot_n], grand=False)
     W.total(["TOTAL EXPECTED", "", "", tot_exp, "", f"Attendance {pct(tot_p, held) * 100:.1f}%" if held else ""], grand=True)
-    widths(ls, [7, 13, 11, 18, 10, 34, 14, 7, 15, 28, 38, 6, 13, 22])
+    widths(ls, [7, 13, 11, 18, 10, 34, 14, 7, 15, 28, 38, 6] + ([13] if show_book else []) + [13, 22])
     page_setup(ls)
 
     wb.active = 0

@@ -31,12 +31,12 @@ exports.uploadDataset = async (req, res) => {
     try {
       parsed = parseDataset(tmpPath);
     } catch (err) {
-      return res.status(400).json({ error: `Could not read the dataset: ${err.message}` });
+      return res.status(400).json({ error: `Could not read the dataset: ${err.message}`, report: err.report || null });
     }
 
-    const { courses, teachers, studentRegistrations = [] } = parsed;
+    const { courses, teachers, studentRegistrations = [], report = null } = parsed;
     if (!courses.length) {
-      return res.status(400).json({ error: 'No valid courses found. Check the column format matches the sample dataset.' });
+      return res.status(400).json({ error: 'No valid courses found in the file. See the column report below for what was read and what is missing.', report });
     }
 
     if (replace) {
@@ -137,6 +137,7 @@ exports.uploadDataset = async (req, res) => {
       totalCourses: courses.length,
       totalTeachers: teachers.length,
       studentLoginsCreated: (studentLogins && studentLogins.created) || 0,
+      report,   // columns found / missing, rows used / skipped, what data came in
     });
   } catch (err) {
     console.error('Dataset upload error:', err);

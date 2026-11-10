@@ -11,8 +11,8 @@ const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
   fileFilter: (_req, file, cb) => {
-    const ok = /\.(xlsx|xls)$/i.test(file.originalname);
-    cb(ok ? null : new Error('Only .xlsx or .xls files are allowed.'), ok);
+    const ok = /\.(xlsx|xls|csv)$/i.test(file.originalname);
+    cb(ok ? null : new Error('Only .xlsx, .xls or .csv files are allowed.'), ok);
   },
 });
 

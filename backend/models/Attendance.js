@@ -25,12 +25,17 @@ const attendanceSchema = new mongoose.Schema(
     status: { type: String, enum: ['present', 'absent'], default: 'present' },
     scannedAt: { type: Date, default: Date.now },
     // Manual corrections (only after a paper's time is over):
-    source: { type: String, default: 'scan' },        // 'scan' | 'manual'
+    source: { type: String, default: 'scan' },        // 'scan' | 'manual' | 'sheet' (identification-sheet import)
     added: { type: Boolean, default: false },         // a student added to this paper by hand (not on the seating plan)
     batch: { type: String, default: '' },
     section: { type: String, default: '' },
     editedBy: { type: String, default: '' },
     editedAt: { type: Date, default: null },
+    // Answer-booklet number written on the identification sheet (optional; typed
+    // in by the Exam Cell or imported from the scanned identification sheets).
+    booklet: { type: String, default: '' },
+    // Where an identification-sheet import took this row from (e.g. "Attendence_Set_1.pdf p.12").
+    sheetRef: { type: String, default: '' },
     batchId: { type: mongoose.Schema.Types.ObjectId, ref: 'GeneratedFile', default: null },
     examType: { type: String, default: '' },
   },

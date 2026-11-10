@@ -422,42 +422,310 @@ function parseTimetable(rows) {
   return { courses: unique, teachers: Array.from(teacherMap.values()), studentRegistrations: [] };
 }
 
+// ── column aliases, header-row / sheet detection and the import report ────
+// Each report shape lists the columns its parser uses. A header is matched to a
+// column by its name, ignoring case, spaces, "_", ".", ":" and "#" — and by a few
+// common alternative names (e.g. "Reg No" for Student ID). Matched columns are
+// renamed to the standard name before parsing, so the parsers stay unchanged.
+const canonH = (s) => String(s == null ? '' : s).replace(/^﻿/, '').toLowerCase()
+  .replace(/[_.:#*]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+const SCHEMAS = {
+  student: {
+    label: 'Student-wise registration report',
+    fields: [
+      { key: 'Student ID', required: true,
+        aliases: ['student id', 'studentid', 'student reg no', 'reg no', 'registration no', 'registration number', 'reg number', 'roll no', 'roll number', 'enrollment no', 'enrolment no', 'student no', 'student number', 'reg id'],
+        impact: 'Students cannot be saved: per-student clash checks, admit cards, seating and the student portal will not work for this file. Courses are still imported.' },
+      { key: 'Student Name', aliases: ['student name', 'name', 'full name', 'student full name'],
+        impact: 'Students are saved without names — admit cards, seating plans and lists will show blank names.' },
+      { key: 'Academic Program', aliases: ['academic program', 'academic programme', 'program', 'programme', 'degree', 'degree program', 'program name'],
+        impact: "Each student's program is unknown — BS/MS split, department lists and the degree on admit cards will be blank or less accurate." },
+      { key: 'Batch Intake', aliases: ['batch intake', 'batch', 'intake', 'session', 'admission batch'],
+        impact: 'Batch is unknown — seating cannot keep same-batch students apart and sections cannot be matched by batch.' },
+      { key: 'Courses with Names', required: true,
+        aliases: ['courses with names', 'courses', 'registered courses', 'course list', 'courses registered', 'enrolled courses', 'subjects', 'course names'],
+        impact: 'No courses can be read.' },
+    ],
+    known: ['s no', 'sr no', 'serial no', 'number of courses', 'no of courses', 'credit hours', 'total credit hours'],
+  },
+  classlist: {
+    label: 'ERP class list (one row per class)',
+    fields: [
+      { key: 'Code', required: true, aliases: ['code', 'class code'], impact: 'No classes can be read.' },
+      { key: 'Name', aliases: ['name', 'course name', 'course title', 'title'], impact: 'Course names are taken from the course code.' },
+      { key: 'Academic Term', aliases: ['academic term', 'term'], impact: 'Academic term is left blank.' },
+      { key: 'Primary Faculty', required: true, aliases: ['primary faculty', 'faculty', 'teacher', 'instructor'], impact: 'Teachers are unknown (TBA) — no teacher clash checks and no invigilation conflict-of-interest checks.' },
+      { key: 'Enrolled Students', aliases: ['enrolled students', 'enrolled', 'strength', 'students'], impact: 'Section sizes are 0 and the batches sitting in each section are unknown.' },
+      { key: 'Program Batch', required: true, aliases: ['program batch', 'programme batch', 'batch'], impact: 'Programs and batches of each section are unknown.' },
+    ],
+    known: ['s no', 'sr no'],
+  },
+  coursewise: {
+    label: 'Course-wise enrolment report',
+    fields: [
+      { key: 'Course Code', required: true, aliases: ['course code', 'code'], impact: 'No courses can be read.' },
+      { key: 'Course Title', required: true, aliases: ['course title', 'title', 'course name', 'name'], impact: 'No courses can be read.' },
+      { key: 'Credit Hours', aliases: ['credit hours', 'credit', 'credits', 'cr', 'credit hrs'], impact: 'Every course is taken as 3 credit hours.' },
+      { key: 'Enrolled Students', aliases: ['enrolled students', 'enrolled', 'students', 'strength'], impact: 'Course sizes are 0.' },
+      { key: 'Meta Details', aliases: ['meta details', 'meta', 'sections details', 'section details'], impact: 'Sections and teachers are unknown — each course becomes one section with teacher TBA.' },
+    ],
+    known: ['s no', 'sr no', 'sections'],
+  },
+  timetable: {
+    label: 'Timetable dataset (one row per class component)',
+    fields: [
+      { key: 'Code', required: true, aliases: ['code', 'course code'], impact: 'No courses can be read.' },
+      { key: 'Name', required: true, aliases: ['name', 'course name', 'course title', 'title'], impact: 'No courses can be read.' },
+      { key: 'Component', required: true, aliases: ['component', 'class type'], impact: 'Rows cannot be told apart as Lecture or Lab — none are imported.' },
+      { key: 'Class Section', aliases: ['class section', 'section'], impact: 'Sections are taken from the class code, or left blank.' },
+      { key: 'Academic Term', aliases: ['academic term', 'term'], impact: 'Academic term is set to a default.' },
+      { key: 'Primary Faculty', aliases: ['primary faculty', 'faculty', 'teacher', 'instructor'], impact: 'Teachers are unknown (TBA) — no teacher clash checks.' },
+      { key: 'Enrolled Students', required: true, aliases: ['enrolled students', 'enrolled', 'strength', 'students'], impact: 'Rows without a student count are skipped — nothing is imported.' },
+      { key: 'Program Batch', aliases: ['program batch', 'programme batch', 'batch'], impact: 'Programs and batches are unknown.' },
+      { key: 'Credit Hours', aliases: ['credit hours', 'credit', 'credits', 'cr', 'credit hrs'], impact: 'Every course is taken as 3 credit hours.' },
+    ],
+    known: ['s no', 'sr no'],
+  },
+};
+const ALL_ALIASES = [...new Set(Object.values(SCHEMAS).flatMap((s) => s.fields.flatMap((f) => f.aliases)))];
+
+// does header `h` (canonical) match alias `a`? exact, or a multi-word alias inside it
+const aliasHit = (h, a) => h === a || (a.includes(' ') && h.includes(a));
+
+function mapColumns(schema, headers) {
+  const map = {};            // field key → original header
+  const used = new Set();
+  for (const f of schema.fields) {
+    // exact matches first, then "contains" matches; aliases in priority order
+    let hit = null;
+    for (const a of f.aliases) { hit = headers.find((h) => !used.has(h) && canonH(h) === a); if (hit) break; }
+    if (!hit) for (const a of f.aliases) { hit = headers.find((h) => !used.has(h) && a.includes(' ') && canonH(h).includes(a)); if (hit) break; }
+    if (hit) { map[f.key] = hit; used.add(hit); }
+  }
+  return { map, used };
+}
+
+// which report is this? (same order and rules as before, now alias-aware)
+function detectShapeMapped(headers) {
+  const ch = headers.map(canonH);
+  const m = {};
+  for (const [k, s] of Object.entries(SCHEMAS)) m[k] = mapColumns(s, headers).map;
+  if (m.student['Courses with Names']) return 'student';
+  if (m.classlist.Code && m.classlist['Primary Faculty'] && m.classlist['Program Batch'] && !m.timetable.Component) return 'classlist';
+  const literalCourse = ch.some((h) => h.includes('course code') || h.includes('course title'));
+  if (literalCourse && (m.coursewise['Meta Details'] || m.coursewise['Enrolled Students'])) return 'coursewise';
+  if (m.timetable.Component || (m.timetable.Code && m.timetable.Name && ch.includes('code') && ch.includes('name'))) return 'timetable';
+  if (m.coursewise['Meta Details'] && (m.coursewise['Course Code'] || m.coursewise['Course Title'])) return 'coursewise';
+  return 'unknown';
+}
+
+// the header row: the row (among the first 25) with the most recognised column names
+function findHeaderRow(sheet) {
+  const aoa = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false });
+  let best = -1, bestScore = 0;
+  const n = Math.min(aoa.length, 25);
+  for (let i = 0; i < n; i++) {
+    const score = (aoa[i] || []).filter((c) => { const h = canonH(c); return h && ALL_ALIASES.some((a) => aliasHit(h, a)); }).length;
+    if (score > bestScore) { best = i; bestScore = score; }
+  }
+  return bestScore >= 2 ? best : 0;
+}
+
+// rows of one sheet, read from its header row (absolute sheet row index)
+function readRows(sheet) {
+  const rel = findHeaderRow(sheet);
+  const aoa = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false, raw: true });
+  if (!aoa.length) return { rows: [], headerRow: 0 };
+  // translate "nth non-blank row" into the absolute sheet row of that header
+  const range = xlsx.utils.decode_range(sheet['!ref'] || 'A1');
+  let absRow = range.s.r;
+  if (rel > 0) {
+    let seen = -1;
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      let blank = true;
+      for (let c = range.s.c; c <= range.e.c; c++) { const cell = sheet[xlsx.utils.encode_cell({ r, c })]; if (cell && cell.v !== '' && cell.v != null) { blank = false; break; } }
+      if (!blank) seen++;
+      if (seen === rel) { absRow = r; break; }
+    }
+  }
+  const opts = { defval: '' };
+  if (absRow > range.s.r) opts.range = absRow;
+  return { rows: xlsx.utils.sheet_to_json(sheet, opts), headerRow: absRow };
+}
+
+const filled = (v) => !(v == null || String(v).trim() === '');
+const rowNo = (r) => (r && typeof r.__rowNum__ === 'number' ? r.__rowNum__ + 1 : null);
+
+// rename matched columns to the standard names (keeps the Excel row number)
+function canonicalRows(rows, map) {
+  const back = Object.fromEntries(Object.entries(map).map(([k, h]) => [h, k]));
+  const stdLower = new Set(Object.keys(map).map((k) => k.toLowerCase()));
+  return rows.map((r) => {
+    const o = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (back[k]) o[back[k]] = v;
+      else if (!stdLower.has(String(k).toLowerCase().trim()) && !o[k]) o[k] = v;
+    }
+    Object.defineProperty(o, '__rowNum__', { value: r.__rowNum__, enumerable: false });
+    return o;
+  });
+}
+
+function addSkip(list, reason, r) {
+  let s = list.find((x) => x.reason === reason);
+  if (!s) { s = { reason, count: 0, rows: [] }; list.push(s); }
+  s.count++;
+  const n = rowNo(r);
+  if (n && s.rows.length < 8) s.rows.push(n);
+}
+
+// row-level checks, mirroring what each parser keeps or drops
+function checkRows(shape, rows) {
+  const skipped = []; const notes = [];
+  let used = 0;
+  if (shape === 'student') {
+    const seen = new Map(); let badEntries = 0; const badEx = [];
+    for (const r of rows) {
+      const entries = splitCourses(r['Courses with Names']);
+      if (!entries.length) { addSkip(skipped, 'No courses listed in the row', r); continue; }
+      used++;
+      for (const e of entries) {
+        const p = parseCourseEntry(e);
+        if (!p || !/^[A-Z]{2,6}-?\d{3,4}/.test(p.code)) { badEntries++; if (badEx.length < 3) badEx.push(String(e).slice(0, 40)); }
+      }
+      const sid = norm(r['Student ID']);
+      if (!sid) addSkip(notes, 'Courses read, but the student was not saved (no Student ID)', r);
+      else seen.set(sid, (seen.get(sid) || 0) + 1);
+      if (r['Student Name'] !== undefined && !filled(r['Student Name']) && sid) addSkip(notes, 'Student Name is empty', r);
+      if (r['Academic Program'] !== undefined && !filled(r['Academic Program']) && sid) addSkip(notes, 'Academic Program is empty', r);
+      if (r['Batch Intake'] !== undefined && !filled(r['Batch Intake']) && sid) addSkip(notes, 'Batch Intake is empty', r);
+    }
+    if (badEntries) notes.push({ reason: `Course entries that could not be read as "CODE - Name - Credit" (e.g. ${badEx.map((x) => `"${x}"`).join(', ')})`, count: badEntries, rows: [] });
+    const dup = [...seen.values()].filter((c) => c > 1).length;
+    if (dup) notes.push({ reason: 'Students listed in more than one row (their courses were merged)', count: dup, rows: [] });
+  } else if (shape === 'classlist') {
+    for (const r of rows) {
+      const raw = norm(r.Code);
+      if (!/-(lecture|lab)$/i.test(raw)) { addSkip(skipped, 'Not a class row (heading / group total)', r); continue; }
+      used++;
+      const fac = norm(r['Primary Faculty']);
+      if (!fac || /^tba$/i.test(fac)) addSkip(notes, 'Class without a teacher (TBA)', r);
+      if (r['Enrolled Students'] !== undefined && !(parseInt(r['Enrolled Students'], 10) > 0)) addSkip(notes, 'Class with 0 students', r);
+    }
+  } else if (shape === 'coursewise') {
+    for (const r of rows) {
+      const code = norm(r['Course Code']); const name = norm(r['Course Title']);
+      if (!code || !name || /course\s*code/i.test(code)) { addSkip(skipped, 'Course Code or Course Title is empty', r); continue; }
+      used++;
+      if (r['Meta Details'] !== undefined && !filled(r['Meta Details'])) addSkip(notes, 'No section / teacher details (one section, teacher TBA)', r);
+    }
+  } else if (shape === 'timetable') {
+    for (const r of rows) {
+      const comp = norm(r.Component);
+      if (!['Lecture', 'Lab'].includes(comp)) { addSkip(skipped, 'Component is not "Lecture" or "Lab"', r); continue; }
+      if (!norm(r.Code) || !norm(r.Name)) { addSkip(skipped, 'Code or Name is empty', r); continue; }
+      if (!(parseInt(r['Enrolled Students'], 10) > 0)) { addSkip(skipped, 'Enrolled Students is 0 or empty', r); continue; }
+      used++;
+      if (r['Primary Faculty'] !== undefined && !filled(r['Primary Faculty'])) addSkip(notes, 'No teacher (TBA)', r);
+    }
+  }
+  return { used, skipped, notes };
+}
+
+function buildReport({ sheetName, sheetNames, headerRow, shape, headers, map, rows, result }) {
+  const schema = SCHEMAS[shape];
+  const found = []; const missing = [];
+  for (const f of schema.fields) {
+    const col = map[f.key];
+    if (col) {
+      const n = rows.filter((r) => filled(r[f.key])).length;
+      found.push({ field: f.key, column: col, renamed: canonH(col) !== canonH(f.key), required: !!f.required, filledRows: n, emptyRows: rows.length - n });
+    } else {
+      missing.push({ field: f.key, required: !!f.required, impact: f.impact });
+    }
+  }
+  const usedHeaders = new Set(Object.values(map));
+  const known = new Set(schema.known || []);
+  const ignored = headers.filter((h) => !usedHeaders.has(h) && filled(h) && !/^__empty/i.test(h) && !known.has(canonH(h)));
+  const chk = checkRows(shape, rows);
+  const c = result.courses || []; const regs = result.studentRegistrations || [];
+  const uniq = (a) => new Set(a.filter(Boolean)).size;
+  const data = {
+    courses: uniq(c.map((x) => x.code)),
+    courseRecords: c.length,
+    sections: c.filter((x) => x.section).length,
+    teachers: (result.teachers || []).length,
+    students: regs.length,
+    programs: uniq(regs.length ? regs.map((r) => r.program) : c.map((x) => x.program)),
+    batches: uniq(regs.length ? regs.map((r) => r.batch) : c.flatMap((x) => x.programBatches || [x.programBatch])),
+    labs: c.filter((x) => x.component === 'Lab').length,
+    noExam: c.filter((x) => x.noExam).length,
+    noTimetable: c.filter((x) => x.noTimetable).length,
+  };
+  const warnings = [];
+  for (const m of missing) if (m.required) warnings.push(`Required column "${m.field}" is missing: ${m.impact}`);
+  for (const f of found) if (f.required && f.filledRows === 0) warnings.push(`Column "${f.column}" is present but empty in every row.`);
+  return {
+    sheet: sheetName, sheets: sheetNames, headerRow: headerRow + 1, shape, shapeLabel: schema.label,
+    columns: { found, missing, ignored },
+    rows: { total: rows.length, used: chk.used, skipped: chk.skipped, notes: chk.notes },
+    data, warnings,
+  };
+}
+
 // ── entry point ─────────────────────────────────────────────────────────────
 function parseDataset(xlsxPath) {
   if (!fs.existsSync(xlsxPath)) {
     throw new Error(`Dataset not found at ${xlsxPath}`);
   }
   // cellStyles:true so we can read the YELLOW highlight (courses to drop from the
-  // datesheet). Pick the first sheet that actually has data rows.
+  // datesheet). Works for .xlsx, .xls and .csv.
   const wb = xlsx.readFile(xlsxPath, { cellStyles: true });
-  let sheet = wb.Sheets[wb.SheetNames[0]];
-  let rows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
-  if (!rows.length) {
-    for (const nm of wb.SheetNames) {
-      const r = xlsx.utils.sheet_to_json(wb.Sheets[nm], { defval: '' });
-      if (r.length) { sheet = wb.Sheets[nm]; rows = r; break; }
-    }
+  // Use the first sheet whose columns are recognised (title rows above the header
+  // are allowed); fall back to the first sheet that has data.
+  const tried = [];
+  let pick = null;
+  for (const nm of wb.SheetNames) {
+    const sh = wb.Sheets[nm];
+    if (!sh || !sh['!ref']) continue;
+    const { rows, headerRow } = readRows(sh);
+    if (!rows.length) continue;
+    const headers = Object.keys(rows[0]);
+    const shape = detectShapeMapped(headers);
+    tried.push({ sheet: nm, headerRow: headerRow + 1, columns: headers.filter((h) => !/^__empty/i.test(h)) });
+    if (shape !== 'unknown') { pick = { nm, sheet: sh, rows, headerRow, headers, shape }; break; }
   }
-  if (!rows.length) {
-    throw new Error('The dataset is empty.');
+  if (!pick) {
+    if (!tried.length) throw new Error('The dataset is empty.');
+    const err = new Error(
+      'Unrecognised columns. Expected a "Courses with Names" column (student ' +
+      'registration export), Code/Name/Component columns (timetable format), ' +
+      'Code/Primary Faculty/Program Batch (ERP class list), or ' +
+      'Course Code / Course Title / Meta Details columns (course-wise enrolment report).'
+    );
+    err.report = { shape: 'unknown', sheets: wb.SheetNames, tried };
+    throw err;
   }
 
-  const shape = detectShape(rows);
-  if (shape === 'student') return parseStudentWise(rows);
-  if (shape === 'classlist') return parseClassList(rows);
-  if (shape === 'timetable') return parseTimetable(rows);
-  if (shape === 'coursewise') {
-    // find the Course Code column letter, then collect codes whose cell fill is yellow
+  const { nm, sheet, headerRow, headers, shape } = pick;
+  const { map } = mapColumns(SCHEMAS[shape], headers);
+  const rows = canonicalRows(pick.rows, map);
+
+  let result;
+  if (shape === 'student') result = parseStudentWise(rows);
+  else if (shape === 'classlist') result = parseClassList(rows);
+  else if (shape === 'timetable') result = parseTimetable(rows);
+  else {
+    // coursewise: collect codes whose cell fill is yellow (→ removed from the datesheet)
     const yellow = new Set();
     try {
       const range = xlsx.utils.decode_range(sheet['!ref']);
-      // locate header row + the "Course Code"/"Code" column
-      let codeCol = -1, headerRow = range.s.r;
-      outer: for (let r = range.s.r; r <= Math.min(range.s.r + 3, range.e.r); r++) {
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const cell = sheet[xlsx.utils.encode_cell({ r, c })];
-          if (cell && /course\s*code|^code$/i.test(String(cell.v || '').trim())) { codeCol = c; headerRow = r; break outer; }
-        }
+      const codeHeader = canonH(map['Course Code'] || 'course code');
+      let codeCol = -1;
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = sheet[xlsx.utils.encode_cell({ r: headerRow, c })];
+        if (cell && canonH(cell.v) === codeHeader) { codeCol = c; break; }
       }
       if (codeCol >= 0) {
         for (let r = headerRow + 1; r <= range.e.r; r++) {
@@ -471,14 +739,13 @@ function parseDataset(xlsxPath) {
         }
       }
     } catch { /* styles unavailable → fall back to keyword-only exclusion */ }
-    return parseCourseWise(rows, yellow);
+    result = parseCourseWise(rows, yellow);
   }
-
-  throw new Error(
-    'Unrecognised columns. Expected a "Courses with Names" column (student ' +
-    'registration export), Code/Name/Component columns (timetable format), or ' +
-    'Course Code / Course Title / Meta Details columns (course-wise enrolment report).'
-  );
+  // what was read, what is missing — shown to the Exam Cell after every import
+  try {
+    result.report = buildReport({ sheetName: nm, sheetNames: wb.SheetNames, headerRow, shape, headers, map, rows, result });
+  } catch (e) { result.report = { shape, error: e.message }; }
+  return result;
 }
 
-module.exports = { parseDataset, parseStudentWise, parseTimetable, parseClassList, SECTION_LIMIT };
+module.exports = { parseDataset, parseStudentWise, parseTimetable, parseClassList, SECTION_LIMIT, SCHEMAS };

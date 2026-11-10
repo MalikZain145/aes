@@ -54,7 +54,7 @@ async function rosterForBatches(batchIds) {
 async function withStatus(roster) {
   const dates = [...new Set(roster.map((r) => r.date))];
   const att = dates.length ? await Attendance.find({ date: { $in: dates } })
-    .select('studentId name program batch code courseName date slot room seat section status source added editedAt').lean() : [];
+    .select('studentId name program batch code courseName date slot room seat section status source added editedAt booklet').lean() : [];
   const marks = new Map();
   for (const a of att) marks.set(`${a.studentId}|${a.code}|${a.date}|${a.slot}`, a);
   const keys = new Set(roster.map((r) => `${r.studentId}|${r.code}|${r.date}|${r.slot}`));
@@ -76,8 +76,9 @@ async function withStatus(roster) {
     const st = statusOf(r, mark);
     let note = '';
     if (r.added) note = 'Added by Exam Cell';
+    else if (a && a.source === 'sheet') note = st === 'P' ? 'Present on identification sheet' : 'Absent on identification sheet';
     else if (manual) note = st === 'P' ? 'Marked P by Exam Cell' : 'Marked A by Exam Cell';
-    return { ...r, status: st, note };
+    return { ...r, status: st, note, booklet: (a && a.booklet) || '' };
   });
 }
 

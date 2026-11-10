@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   UserCheck, RefreshCw, FileText, DoorOpen, ChevronRight, Users, CheckCircle2, XCircle, Clock, Radio,
-  Lock, Download, Eye, X, CalendarDays, UserPlus, FileSpreadsheet, Trash2, ChevronDown, UserX,
+  Lock, Download, Eye, X, CalendarDays, UserPlus, FileSpreadsheet, Trash2, ChevronDown, UserX, Upload,
 } from 'lucide-react';
 import api, { errMsg } from '../api/client';
 import { downloadFile } from '../api/download';
@@ -65,6 +65,7 @@ export default function Attendance() {
   const [addOpen, setAddOpen] = useState(false);
   const [exporting, setExporting] = useState('');      // '' | 'absent' | 'present' | 'all'
   const [exportOpen, setExportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);   // identification-sheet Excel import
   const exportRef = useRef(null);
   const { admin } = useAuth();
   const sheetRef = useRef(null);
@@ -140,6 +141,18 @@ export default function Attendance() {
       toast.success('Removed.'); await refreshSheet();
     } catch (err) { toast.error(errMsg(err, 'Could not remove the student.')); }
   };
+  // Answer-booklet number (optional) — saved when the box loses focus / Enter.
+  const saveBooklet = async (x, value) => {
+    const v = String(value || '').trim().replace(/\s+/g, '');
+    if (v === (x.booklet || '')) return;
+    setBusy(`b-${x.studentId}`);
+    try {
+      const r = await api.post('/attendance/booklet', { date: sheet.date, slot: sheet.slot, code: sheet.code, room: sheet.room, studentId: x.studentId, booklet: v });
+      toast.success(v ? `${x.studentId}: booklet ${v} saved${r.data.markedPresent ? ' · marked Present' : ''}` : `${x.studentId}: booklet number cleared`);
+      await refreshSheet();
+    } catch (err) { toast.error(errMsg(err, 'Could not save the booklet number.')); }
+    finally { setBusy(''); }
+  };
   // Export → Absentees / Presentees / All. Built by the server from the live
   // attendance at the moment of the click, so every scan and correction is in it.
   useEffect(() => {
@@ -205,6 +218,10 @@ export default function Attendance() {
                 <CheckCircle2 size={14} /> Exam over · attendance final
               </span>
             )}
+            <button className="btn btn-ghost btn-sm" onClick={() => setImportOpen(true)}
+              title="Mark attendance and booklet numbers from the reviewed identification-sheet Excel">
+              <Upload size={14} /> Import sheets
+            </button>
             <div ref={exportRef} style={{ position: 'relative' }}>
               <button className="btn btn-sm btn-brass" disabled={!!exporting || !data.rooms.length} onClick={() => setExportOpen((v) => !v)}
                 aria-haspopup="menu" aria-expanded={exportOpen}
@@ -418,12 +435,12 @@ export default function Attendance() {
                         </div>
                         {sheet.state === 'final' && (
                           <div style={{ padding: '7px 14px', fontSize: 12, background: '#fffbea', color: '#664d03', borderBottom: '1px solid var(--border,#e5ece8)' }}>
-                            Final list — click a <b>P</b> / <b>A</b> to switch it. Changes are saved at once and shown with a ✎.
+                            Final list — click a <b>P</b> / <b>A</b> to switch it. Changes are saved at once and shown with a ✎. Type a booklet number and press Enter to save it (optional).
                           </div>
                         )}
                         <ScrollX className="vw-tablewrap" style={{ maxHeight: 420, overflow: 'auto' }}>
                           <table className="vw-table" style={{ width: '100%' }}>
-                            <thead><tr><th>Seat</th><th>Reg No</th><th style={{ textAlign: 'left' }}>Name</th><th style={{ textAlign: 'left' }}>Degree / Batch</th><th>Sec</th><th>Attendance</th></tr></thead>
+                            <thead><tr><th>Seat</th><th>Reg No</th><th style={{ textAlign: 'left' }}>Name</th><th style={{ textAlign: 'left' }}>Degree / Batch</th><th>Sec</th><th>Booklet No.</th><th>Attendance</th></tr></thead>
                             <tbody>
                               {sheet.rows.map((x) => {
                                 const m = MARK[x.mark] || MARK['-'];
@@ -434,6 +451,16 @@ export default function Attendance() {
                                     <td>{x.name}{x.added && <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, color: '#084298', background: '#cfe2ff', borderRadius: 999, padding: '1px 7px' }}>ADDED</span>}</td>
                                     <td style={{ fontSize: 12 }}>{x.batch || x.program}</td>
                                     <td style={{ textAlign: 'center' }}>{x.section || ''}</td>
+                                    <td style={{ textAlign: 'center' }}>
+                                      {sheet.state !== 'upcoming' ? (
+                                        <input key={`${x.studentId}-${x.booklet || ''}`} className="input vw-mono" defaultValue={x.booklet || ''} placeholder="—"
+                                          disabled={busy === `b-${x.studentId}`} maxLength={20} inputMode="numeric"
+                                          title={x.fromSheet ? 'From the identification sheet — edit if wrong' : 'Answer-booklet number (optional)'}
+                                          onBlur={(e) => saveBooklet(x, e.target.value)}
+                                          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.currentTarget.value = x.booklet || ''; e.currentTarget.blur(); } }}
+                                          style={{ width: 96, padding: '3px 6px', fontSize: 12.5, textAlign: 'center' }} />
+                                      ) : <span style={{ color: '#8a978f' }}>—</span>}
+                                    </td>
                                     <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                                       {sheet.state === 'final' ? (
                                         <button type="button" onClick={() => toggleMark(x)} disabled={busy === `m-${x.studentId}`}
@@ -470,6 +497,8 @@ export default function Attendance() {
       )}
       <AddStudentModal open={addOpen} sheet={sheet} onClose={() => setAddOpen(false)}
         onDone={async () => { setAddOpen(false); await refreshSheet(); }} />
+      <SheetImportModal open={importOpen} onClose={() => setImportOpen(false)}
+        onDone={async () => { await load(true); if (sheet) await openSheet(sheet.room, sheet, true, sheet.section ?? null); }} />
     </div>
   );
 }
@@ -533,6 +562,70 @@ function AddStudentModal({ open, sheet, onClose, onDone }) {
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
         <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" disabled={saving} onClick={save}><UserPlus size={14} /> {saving ? 'Adding…' : 'Add to attendance'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* Identification sheets → attendance. The scanned sheets are read into an Excel
+   ("Import" sheet: Date | Time | Course | Room | Reg No | Mark | Booklet No. | Source),
+   the Exam Cell reviews it, then uploads it here. Check first (nothing is written),
+   then Apply. A scanned admit card is never overridden. */
+function SheetImportModal({ open, onClose, onDone }) {
+  const toast = useToast();
+  const [file, setFile] = useState(null);
+  const [rep, setRep] = useState(null);
+  const [busy, setBusy] = useState('');
+  useEffect(() => { if (open) { setFile(null); setRep(null); setBusy(''); } }, [open]);
+  const send = async (dry) => {
+    if (!file) { toast.error('Choose the reviewed Excel file first.'); return; }
+    const fd = new FormData(); fd.append('dryRun', dry ? '1' : '0'); fd.append('file', file);
+    setBusy(dry ? 'check' : 'apply');
+    try {
+      const r = await api.post('/attendance/sheet-import', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 180000 });
+      setRep(r.data);
+      if (!dry) { toast.success(`Applied: ${r.data.presentNew} marked present, ${r.data.bookletFilled} booklet numbers saved.`); await onDone(); }
+    } catch (err) { toast.error(errMsg(err, 'Could not read the Excel file.')); }
+    finally { setBusy(''); }
+  };
+  const box = { border: '1px solid var(--border,#e5ece8)', borderRadius: 10, padding: '8px 10px', textAlign: 'center' };
+  const n = (v, l, c) => (<div style={box}><div style={{ fontSize: 20, fontWeight: 800, color: c }}>{v}</div><div style={{ fontSize: 11.5, color: 'var(--text-faint,#6c7b72)' }}>{l}</div></div>);
+  return (
+    <Modal open={open} onClose={onClose} title="Import identification sheets" width={640}>
+      <div style={{ fontSize: 12.5, color: 'var(--text-faint,#6c7b72)', marginBottom: 12, lineHeight: 1.5 }}>
+        Upload the reviewed identification-sheet Excel (sheet <b>Import</b>). <b>Check</b> shows what will change; nothing is saved until you press <b>Apply</b>.
+        A student whose admit card was scanned stays Present; rows still marked CHECK are skipped.
+      </div>
+      <input type="file" accept=".xlsx,.xls" onChange={(e) => { setFile(e.target.files[0] || null); setRep(null); }} />
+      {rep && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: 8 }}>
+            {n(rep.rows, 'rows read', '#0f5132')}
+            {n(rep.presentNew, 'new Present', '#0f5132')}
+            {n(rep.bookletFilled, 'booklet numbers', '#084298')}
+            {n(rep.alreadyPresent, 'already Present', '#41464b')}
+            {n(rep.conflicts.length, 'conflicts (not changed)', '#9c1c1c')}
+            {n(rep.skipped.length, 'skipped', '#664d03')}
+          </div>
+          {rep.dryRun && <div style={{ fontSize: 12, marginTop: 8, color: '#664d03' }}>Preview only — nothing has been saved yet.</div>}
+          {[['Conflicts — sheet says A but the system has P (left as is)', rep.conflicts.map((c) => `Row ${c.row}: ${c.sid} ${c.code} ${c.date} ${c.slot} — system ${c.system} (${c.why}), sheet ${c.sheet}`)],
+            ['Skipped rows', rep.skipped.map((c) => `Row ${c.row}: ${c.sid || '?'} — ${c.reason}`)]].map(([t, list]) => list.length ? (
+            <details key={t} style={{ marginTop: 10 }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>{t} ({list.length})</summary>
+              <div style={{ maxHeight: 180, overflow: 'auto', fontSize: 12, marginTop: 6, fontFamily: 'ui-monospace,monospace' }}>
+                {list.map((l) => <div key={l}>{l}</div>)}
+              </div>
+            </details>
+          ) : null)}
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+        <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
+        <button type="button" className="btn btn-ghost" disabled={!file || !!busy} onClick={() => send(true)}>{busy === 'check' ? 'Checking…' : 'Check'}</button>
+        <button type="button" className="btn btn-primary" disabled={!file || !!busy || !rep || !rep.dryRun || !rep.writes}
+          onClick={() => { if (window.confirm(`Save ${rep.presentNew} new Present marks and ${rep.bookletFilled} booklet numbers?`)) send(false); }}>
+          <Upload size={14} /> {busy === 'apply' ? 'Applying…' : 'Apply'}
+        </button>
       </div>
     </Modal>
   );

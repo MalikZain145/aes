@@ -284,10 +284,10 @@ async function allRoster() {
 // key "sid|code|date|slot" → { present, at, manual, added } for every attendance row
 async function scanMap(match) {
   const m = new Map();
-  for (const a of await Attendance.find(match).select('studentId code date slot scannedAt createdAt status source added editedBy editedAt').lean()) {
+  for (const a of await Attendance.find(match).select('studentId code date slot scannedAt createdAt status source added editedBy editedAt booklet').lean()) {
     m.set(`${a.studentId}|${a.code}|${a.date}|${a.slot}`, {
-      present: a.status !== 'absent', at: a.scannedAt || null, manual: a.source === 'manual' || !!a.editedAt,
-      added: !!a.added, editedBy: a.editedBy || '', editedAt: a.editedAt || null,
+      present: a.status !== 'absent', at: a.scannedAt || null, manual: a.source === 'manual' || a.source === 'sheet' || !!a.editedAt,
+      added: !!a.added, editedBy: a.editedBy || '', editedAt: a.editedAt || null, booklet: a.booklet || '', source: a.source || 'scan',
     });
   }
   return m;
@@ -380,7 +380,8 @@ async function paperSheet(q) {
     const isP = !!(sm && sm.present);
     return { seat: r.seat, studentId: r.studentId, name: r.name, program: r.program, batch: r.batch, section: r.section,
       mark: isP ? 'P' : (state === 'final' ? 'A' : '-'), scannedAt: sm && sm.present && !sm.manual ? sm.at : null,
-      manual: !!(sm && sm.manual), added: !!r.added, editedBy: (sm && sm.editedBy) || '' };
+      manual: !!(sm && sm.manual), added: !!r.added, editedBy: (sm && sm.editedBy) || '', booklet: (sm && sm.booklet) || '',
+      fromSheet: !!(sm && sm.source === 'sheet') };
   }).sort((a, b) => seatKey(a.seat) - seatKey(b.seat) || String(a.seat).localeCompare(String(b.seat)));
   const present = out.filter((r) => r.mark === 'P').length;
   const first = rows[0] || {};
@@ -653,5 +654,157 @@ exports.exportXlsx = async (req, res) => {
     if (out) { try { require('fs').unlinkSync(out.path); } catch { /* ignore */ } }
     console.error('attendance.export:', e.message);
     if (!res.headersSent) res.status(500).json({ error: e.message || 'Could not build the attendance file.' });
+  }
+};
+
+/* ═══════════════ Answer-booklet numbers & identification sheets ═══════════════ */
+
+// POST /api/attendance/booklet  { date, slot, code, room, studentId, booklet }
+// Saves (or clears) the answer-booklet number of one student on one paper. Allowed
+// once the paper has started. A booklet number means the student wrote the paper, so
+// a student who has no attendance row yet is recorded PRESENT once the paper is over.
+exports.booklet = async (req, res) => {
+  try {
+    const k = paperKeyOk(req.body || {});
+    const sid = str(req.body && req.body.studentId, 40);
+    const booklet = str(req.body && req.body.booklet, 20).replace(/\s+/g, '');
+    if (!k || !sid) return res.status(400).json({ error: 'date, slot, code, room and studentId are required.' });
+    if (booklet && !/^[A-Za-z0-9-]{1,20}$/.test(booklet)) return res.status(400).json({ error: 'Booklet number may contain only letters, digits and "-".' });
+    if (clock.slotPhase(k.date, k.slot) === 'before') return res.status(409).json({ error: 'Booklet numbers can be entered once the paper has started.' });
+    const r = (await fullRoster({ date: k.date, slot: k.slot, code: k.code }))
+      .find((x) => x.studentId === sid && x.code === k.code && x.date === k.date && x.slot === k.slot && x.room === k.room);
+    if (!r) return res.status(404).json({ error: `${sid} is not on the ${k.code} list in ${k.room}.` });
+    const key = { studentId: sid, code: k.code, date: k.date, slot: k.slot };
+    const who = (req.user && req.user.username) || '';
+    const existing = await Attendance.findOne(key).select('_id status').lean();
+    let markedPresent = false;
+    if (existing) {
+      await Attendance.updateOne(key, { $set: { booklet, editedBy: who, editedAt: new Date() } });
+    } else if (booklet && isFinal(k.date, k.slot)) {
+      await Attendance.create({ ...key, name: r.name, program: r.program, batch: r.batch || '', courseName: r.courseName, room: r.room,
+        seat: r.seat, section: r.section || '', status: 'present', source: 'manual', scannedAt: null, booklet, editedBy: who, editedAt: new Date() });
+      markedPresent = true;
+    } else if (booklet) {
+      return res.status(409).json({ error: 'Scan the admit card first, or enter the booklet number after the paper ends.' });
+    }
+    try { await require('../utils/logger').logActivity('attendance.booklet', `${k.code} ${k.date} ${k.slot} ${k.room}: ${sid} booklet ${booklet || '(cleared)'}`, 'info'); } catch { /* optional */ }
+    res.json({ ok: true, studentId: sid, booklet, markedPresent });
+  } catch (e) {
+    console.error('attendance.booklet:', e.message);
+    res.status(500).json({ error: 'Could not save the booklet number.' });
+  }
+};
+
+/*
+ * POST /api/attendance/sheet-import   (multipart: file = reviewed Excel, dryRun = '1' | '0')
+ *
+ * Applies attendance read from the scanned identification sheets. The Excel is the
+ * reviewed "Identification Sheet Attendance" workbook: sheet "Import" with the
+ * columns  Date | Time | Course | Room | Reg No | Mark (P/A) | Booklet No. | Source.
+ * Rules (a scan is never overridden):
+ *   scanned present      + sheet P  → stays present, booklet number filled in if empty
+ *   scanned present      + sheet A  → NOT changed, listed as a conflict to check
+ *   changed by Exam Cell             → status NOT changed, booklet filled in if empty
+ *   no record            + sheet P  → recorded PRESENT (source 'sheet')
+ *   no record            + sheet A  → nothing to write (absent already)
+ *   not on that paper's list / paper not over → skipped and listed
+ * dryRun=1 only reports what would happen; nothing is written.
+ */
+function normDate(v) {
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+  const s = String(v == null ? '' : v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const M = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+  const m = s.match(/^(\d{1,2})[-\s/]([A-Za-z]{3})[A-Za-z]*[-\s/](\d{4})$/);
+  if (m && M[m[2].toLowerCase()]) return `${m[3]}-${String(M[m[2].toLowerCase()]).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  if (/^\d{5}$/.test(s)) { const d = new Date(Date.UTC(1899, 11, 30) + Number(s) * 86400000); return d.toISOString().slice(0, 10); }
+  return '';
+}
+const normSlot = (v) => String(v == null ? '' : v).replace(/\s+/g, '').replace(/[–—]/g, '-');
+
+exports.sheetImport = async (req, res) => {
+  const fs = require('fs');
+  const file = req.file;
+  try {
+    if (!file) return res.status(400).json({ error: 'Choose the reviewed Excel file.' });
+    const dryRun = String((req.body && req.body.dryRun) ?? '1') !== '0';
+    const XLSX = require('xlsx');
+    const wb = XLSX.readFile(file.path, { cellDates: true });
+    const wsName = wb.SheetNames.find((n) => /^import$/i.test(n)) || wb.SheetNames[0];
+    const grid = XLSX.utils.sheet_to_json(wb.Sheets[wsName], { header: 1, defval: '', raw: true });
+    const hi = grid.findIndex((r) => r.some((c) => /^reg\s*no/i.test(String(c).trim())) && r.some((c) => /^mark/i.test(String(c).trim())));
+    if (hi < 0) return res.status(400).json({ error: `Sheet "${wsName}" has no "Reg No" and "Mark" header row.` });
+    const H = grid[hi].map((c) => String(c).trim().toLowerCase());
+    const col = (re) => H.findIndex((h) => re.test(h));
+    const C = { date: col(/^date/), slot: col(/^(time|slot)/), code: col(/^course/), room: col(/^room/), sid: col(/^reg\s*no/),
+      mark: col(/^mark/), booklet: col(/^booklet/), ref: col(/^source|^page/) };
+    for (const k of ['date', 'slot', 'code', 'room', 'sid', 'mark']) if (C[k] < 0) return res.status(400).json({ error: `Column "${k}" is missing in sheet "${wsName}".` });
+
+    const roster = await fullRoster({});
+    const onList = new Map(roster.map((r) => [`${r.studentId}|${r.code}|${r.date}|${r.slot}`, r]));
+    const rep = { rows: 0, presentNew: 0, bookletFilled: 0, alreadyPresent: 0, absentNoChange: 0, conflicts: [], skipped: [], notOver: 0 };
+    const who = (req.user && req.user.username) || '';
+    const ops = [];
+    for (let i = hi + 1; i < grid.length; i++) {
+      const g = grid[i];
+      const sid = String(g[C.sid] ?? '').trim().replace(/\.0$/, '');
+      const mark = String(g[C.mark] ?? '').trim().toUpperCase().slice(0, 1);
+      if (!sid && !mark) continue;
+      rep.rows++;
+      const excelRow = i + 1;
+      const date = normDate(g[C.date]); const slot = normSlot(g[C.slot]); const code = String(g[C.code] ?? '').trim().toUpperCase();
+      const booklet = C.booklet >= 0 ? String(g[C.booklet] ?? '').trim().replace(/\.0$/, '').replace(/\s+/g, '').slice(0, 20) : '';
+      const ref = C.ref >= 0 ? String(g[C.ref] ?? '').trim().slice(0, 80) : '';
+      if (!['P', 'A'].includes(mark)) { rep.skipped.push({ row: excelRow, sid, reason: 'Mark is not P or A (resolve the CHECK first)' }); continue; }
+      const r = onList.get(`${sid}|${code}|${date}|${slot}`);
+      if (!r) { rep.skipped.push({ row: excelRow, sid, reason: `Not on the ${code || '?'} list for ${date || '?'} ${slot || '?'}` }); continue; }
+      if (!isFinal(date, slot)) { rep.notOver++; rep.skipped.push({ row: excelRow, sid, reason: 'Paper not over yet' }); continue; }
+      ops.push({ excelRow, r, sid, code, date, slot, mark, booklet, ref });
+    }
+    const keys = ops.map((o) => ({ studentId: o.sid, code: o.code, date: o.date, slot: o.slot }));
+    const existing = new Map();
+    for (let i = 0; i < keys.length; i += 500) {
+      const docs = await Attendance.find({ $or: keys.slice(i, i + 500) }).select('studentId code date slot status source editedAt booklet').lean();
+      for (const d of docs) existing.set(`${d.studentId}|${d.code}|${d.date}|${d.slot}`, d);
+    }
+    const writes = [];
+    for (const o of ops) {
+      const k = `${o.sid}|${o.code}|${o.date}|${o.slot}`;
+      const e = existing.get(k);
+      const filter = { studentId: o.sid, code: o.code, date: o.date, slot: o.slot };
+      if (e) {
+        const present = e.status !== 'absent';
+        const edited = e.source === 'manual' || !!e.editedAt;
+        if (present && o.mark === 'P') rep.alreadyPresent++;
+        else if (o.mark !== (present ? 'P' : 'A')) {
+          rep.conflicts.push({ row: o.excelRow, sid: o.sid, code: o.code, date: o.date, slot: o.slot,
+            system: present ? 'P' : 'A', sheet: o.mark, why: present ? (edited ? 'Marked P by Exam Cell' : 'Admit card scanned') : 'Marked A by Exam Cell' });
+        } else rep.absentNoChange++;
+        if (o.booklet && !e.booklet) {
+          rep.bookletFilled++;
+          writes.push({ updateOne: { filter, update: { $set: { booklet: o.booklet, sheetRef: o.ref } } } });
+        }
+      } else if (o.mark === 'P') {
+        rep.presentNew++;
+        writes.push({ updateOne: { filter, upsert: true, update: { $setOnInsert: {
+          name: o.r.name, program: o.r.program, batch: o.r.batch || '', courseName: o.r.courseName, room: o.r.room, seat: o.r.seat,
+          section: o.r.section || '', status: 'present', source: 'sheet', scannedAt: null, booklet: o.booklet, sheetRef: o.ref,
+          editedBy: who, editedAt: new Date() } } } });
+      } else rep.absentNoChange++;
+    }
+    rep.writes = writes.length;
+    rep.dryRun = dryRun;
+    if (!dryRun && writes.length) {
+      for (let i = 0; i < writes.length; i += 500) await Attendance.bulkWrite(writes.slice(i, i + 500), { ordered: false });
+      bumpCache();
+      try { await require('../utils/logger').logActivity('attendance.sheetImport', `Identification sheets: ${rep.presentNew} marked present, ${rep.bookletFilled} booklet numbers, ${rep.conflicts.length} conflicts`, 'info'); } catch { /* optional */ }
+    }
+    rep.conflicts = rep.conflicts.slice(0, 2000); rep.skipped = rep.skipped.slice(0, 2000);
+    res.json(rep);
+  } catch (e) {
+    console.error('attendance.sheetImport:', e.message);
+    res.status(500).json({ error: 'Could not read the identification-sheet Excel.' });
+  } finally {
+    if (file) { try { fs.unlinkSync(file.path); } catch { /* ignore */ } }
   }
 };
