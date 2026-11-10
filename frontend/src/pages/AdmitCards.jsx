@@ -616,8 +616,19 @@ export default function AdmitCards() {
 
 /* Special exam (imported datesheet, e.g. a new intake's mid-terms): its own admit
    cards, seated only in the rooms ticked here. The regular exam is not touched. */
-function SpecialExamPanel({ datesheets, campusLine, includeLabs, onDone }) {
+function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone }) {
   const toast = useToast();
+  // one entry per import (BS + B.Tech sheets of the same import are issued together)
+  const datesheets = useMemo(() => {
+    const by = new Map();
+    for (const d of sheets) {
+      const k = d.meta?.importGroup || d._id;
+      if (!by.has(k)) by.set(k, { ...d, _id: k, ids: [], parts: [] });
+      const g = by.get(k); g.ids.push(d._id); if (d.meta?.partLabel) g.parts.push(d.meta.partLabel);
+      if (d.meta?.groupStudents) g.meta = { ...g.meta, students: d.meta.groupStudents };
+    }
+    return [...by.values()];
+  }, [sheets]);
   const [dsId, setDsId] = useState(datesheets[0]?._id || '');
   const [rooms, setRooms] = useState([]);
   const [picked, setPicked] = useState([]);
@@ -646,7 +657,7 @@ function SpecialExamPanel({ datesheets, campusLine, includeLabs, onDone }) {
     }, 500);
     try {
       const form = new FormData();
-      form.append('datesheetIds', JSON.stringify([dsId]));
+      form.append('datesheetIds', JSON.stringify(ds?.ids || [dsId]));
       form.append('cohort', 'all');
       form.append('campusLine', campusLine || '');
       form.append('includeLabs', includeLabs ? 'true' : 'false');
@@ -669,7 +680,7 @@ function SpecialExamPanel({ datesheets, campusLine, includeLabs, onDone }) {
         Cards for the students of the imported datesheet only, seated in the rooms you tick. The regular exam's cards, seating and attendance stay as they are; earlier cards keep their own status.
       </p>
       <select className="input" value={dsId} onChange={(e) => setDsId(e.target.value)} style={{ maxWidth: 560 }}>
-        {datesheets.map((d) => <option key={d._id} value={d._id}>{d.title}{d.meta?.students ? ` · ${d.meta.students} students` : ''}</option>)}
+        {datesheets.map((d) => <option key={d._id} value={d._id}>{(d.meta?.heading || d.title).replace(/ — B\.Tech$/, '')}{d.parts.length ? ` · ${d.parts.join(' + ')} sheets` : ''}{d.meta?.students ? ` · ${d.meta.students} students` : ''}</option>)}
       </select>
       <div style={{ marginTop: 12, fontSize: 13, fontWeight: 700 }}>Exam rooms <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {picked.length ? `${picked.length} ticked · ${total} seats` : 'none ticked (all rooms)'}</span></div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxHeight: 180, overflow: 'auto' }}>

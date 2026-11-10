@@ -1426,8 +1426,9 @@ function ImportDatesheetCard({ onDone }) {
       f.append('plan', plan); f.append('dataset', data);
       f.append('label', label); f.append('examType', examType); f.append('semester', semester); f.append('year', year); f.append('note', note);
       const r = await api.post('/generate/datesheet-import', f, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10 * 60 * 1000 });
-      toast.success(`Datesheet imported — ${r.data.papers} papers, ${r.data.students} students, ${r.data.days} days.`
-        + (r.data.skippedNoStudents?.length ? ` No students for: ${r.data.skippedNoStudents.join(', ')}.` : ''));
+      toast.success(`Datesheet imported — ${r.data.papers} papers, ${r.data.students} students, ${r.data.days} days${r.data.sheets > 1 ? ' (separate BS and B.Tech datesheets)' : ''}.`
+        + (r.data.skippedNoStudents?.length ? ` No students for: ${r.data.skippedNoStudents.join(', ')}.` : '')
+        + (r.data.coursesWithoutPaper?.length ? ` Registered but no paper: ${r.data.coursesWithoutPaper.join(', ')}.` : ''));
       setOpen(false); setPlan(null); setData(null); onDone && onDone();
     } catch (err) {
       setClashes(err?.response?.data?.clashes || []);

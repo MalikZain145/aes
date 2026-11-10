@@ -172,56 +172,86 @@ async function importPlan({ planFile, dataFile, body = {} }) {
     }
     if (clashes.length) fail(409, `Not imported — ${clashes.length} student clash(es).`, { clashes: clashes.slice(0, 100) });
 
-    // render with the standard datesheet layout
+    // A conducted exam (e.g. the regular mid-terms) is archived first, as before any new datesheet.
+    try { await require('../utils/examArchive').archiveConductedExams({ reason: 'special datesheet imported' }); }
+    catch (e) { console.error('exam archive:', e.message); }
+
+    // B.Tech (Engineering Technology) gets its OWN datesheet, as always; BS another.
+    // A paper both sit (e.g. Pakistan Studies) is printed on both — same date/time.
+    const progOf = new Map(regs.map((r) => [String(r.studentId), `${r.program || ''} ${r.batch || ''}`]));
+    const isBT = (sid) => /engineering\s*technology|b\.?\s*tech\b/i.test(progOf.get(String(sid)) || '');
+    const parts = [
+      { key: 'bs', title: '', keep: (c) => c.students.some((x) => !isBT(x)) },
+      { key: 'btech', title: 'B.Tech', keep: (c) => c.students.some((x) => isBT(x)) },
+    ];
+    const groupHas = new Map();   // merged paper → which parts sit it
+    for (const c of courses) for (const pt of parts) if (pt.keep(c)) { const k = `${pt.key}|${c.group}`; groupHas.set(k, true); }
+    const live = parts.filter((pt) => courses.some((c) => groupHas.get(`${pt.key}|${c.group}`)));
+    const split = live.length > 1;
+
     ensureOutputDir();
     const stamp = Date.now();
     const word = examType === 'mids' ? 'Mids' : 'Finals';
     const sem = String(b.semester || '').trim() || 'Fall';
     const year = Number(b.year) || Number(dates[0].slice(0, 4));
-    const heading = `${label ? `${label} — ` : ''}${examType === 'mids' ? 'Mid Term' : 'Final Term'} Examination, ${sem} ${year}`;
-    const snap = {
-      exam_type: examType, program_level: 'Undergraduate', semester: sem, year, heading,
-      start_date: dispOf(dates[0]), end_date: dispOf(dates[dates.length - 1]),
-      dates, slots, courses, excluded_codes: [], footer_note: footerNote,
-    };
-    snapPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}_snap.json`);
-    fs.writeFileSync(snapPath, JSON.stringify(snap));
-    const pdfName = `Datesheet_${word}_Imported_${stamp}.pdf`;
-    pdfPath = path.join(OUTPUT_DIR, pdfName);
-    const cfgPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}.json`);
-    fs.writeFileSync(cfgPath, JSON.stringify({ schedule_json: snapPath, out: pdfPath, drop_empty_slots: true }));
-    const { code, stdout, stderr } = await runPython(path.join(SCHEDULER_DIR, 'datesheet.py'), ['--render', cfgPath], { timeoutMs: 5 * 60 * 1000 });
-    try { fs.unlinkSync(cfgPath); } catch { /* ignore */ }
-    let result = {};
-    try { result = JSON.parse(String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}'); } catch { result = {}; }
-    if (code !== 0 || result.status !== 'ok' || !fs.existsSync(pdfPath)) {
-      throw new Error(result.error || `Could not render the datesheet. ${String(stderr || '').slice(-300)}`);
-    }
-    // keep the registration file next to the datesheet → admit cards use it automatically
-    const dataName = `${pdfName.replace(/\.pdf$/, '')}_registrations${path.extname(dataFile.originalname || '.xlsx') || '.xlsx'}`;
+    const baseHeading = `${label ? `${label} — ` : ''}${examType === 'mids' ? 'Mid Term' : 'Final Term'} Examination, ${sem} ${year}`;
+    const dataName = `Datesheet_${word}_Imported_${stamp}_registrations${path.extname(dataFile.originalname || '.xlsx') || '.xlsx'}`;
     fs.copyFileSync(dataFile.path, path.join(OUTPUT_DIR, dataName));
-
+    const records = [];
+    for (const pt of live) {
+      const mine = courses.filter((c) => groupHas.get(`${pt.key}|${c.group}`));
+      const myDates = [...new Set(mine.map((c) => c.date))].sort();
+      const mySlots = [...new Set(mine.map((c) => c.slot))].sort((a, z) => slotMinutes(a) - slotMinutes(z));
+      const heading = split && pt.title ? `${baseHeading} — ${pt.title}` : baseHeading;
+      const snap = {
+        exam_type: examType, program_level: 'Undergraduate', semester: sem, year, heading,
+        start_date: dispOf(myDates[0]), end_date: dispOf(myDates[myDates.length - 1]),
+        dates: myDates, slots: mySlots,
+        courses: mine.map((c) => ({ ...c, day_index: myDates.indexOf(c.date), slot_index: mySlots.indexOf(c.slot) })),
+        excluded_codes: [], footer_note: footerNote,
+      };
+      snapPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}_${pt.key}_snap.json`);
+      fs.writeFileSync(snapPath, JSON.stringify(snap));
+      const pdfName = `Datesheet_${word}_Imported_${stamp}${split ? `_${pt.key}` : ''}.pdf`;
+      pdfPath = path.join(OUTPUT_DIR, pdfName);
+      const cfgPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}_${pt.key}.json`);
+      fs.writeFileSync(cfgPath, JSON.stringify({ schedule_json: snapPath, out: pdfPath, drop_empty_slots: true }));
+      const { code, stdout, stderr } = await runPython(path.join(SCHEDULER_DIR, 'datesheet.py'), ['--render', cfgPath], { timeoutMs: 5 * 60 * 1000 });
+      try { fs.unlinkSync(cfgPath); } catch { /* ignore */ }
+      try { fs.unlinkSync(snapPath); } catch { /* ignore */ }
+      snapPath = null;
+      let result = {};
+      try { result = JSON.parse(String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}'); } catch { result = {}; }
+      if (code !== 0 || result.status !== 'ok' || !fs.existsSync(pdfPath)) {
+        throw new Error(result.error || `Could not render the datesheet. ${String(stderr || '').slice(-300)}`);
+      }
+      const papers = new Set(mine.map((c) => c.group)).size;
+      const studs = new Set(mine.flatMap((c) => c.students.filter((x) => (pt.key === 'btech') === isBT(x))));
+      records.push(await GeneratedFile.create({
+        kind: 'datesheet', examType,
+        title: `${heading} (${snap.start_date} – ${snap.end_date})`,
+        files: [{ label: 'Datesheet PDF', filename: pdfName, format: 'pdf', sizeBytes: fileSize(pdfPath) }],
+        summary: { courses: mine.length, days: myDates.length, papers, studentClashes: 0 },
+        meta: {
+          startDate: snap.start_date, endDate: snap.end_date, heading,
+          scheduleFile: result.schedule_file ? path.basename(result.schedule_file) : null,
+          programLevel: 'Undergraduate', semester: sem, year,
+          imported: true, special: true, label: label || undefined,
+          importGroup: String(stamp), part: split ? pt.key : undefined, partLabel: split ? (pt.title || 'BS') : undefined,
+          datasetFile: dataName, students: split ? studs.size : perStudent.size, groupStudents: perStudent.size,
+          footerNote: footerNote || undefined, examRooms: examRooms.length ? examRooms : undefined,
+          config: { examType, startDate: dates[0], semester: sem, year },
+        },
+        status: 'ready',
+      }));
+    }
     const papers = new Set(courses.map((c) => c.group)).size;
-    const record = await GeneratedFile.create({
-      kind: 'datesheet', examType,
-      title: `${heading} (${snap.start_date} – ${snap.end_date})`,
-      files: [{ label: 'Datesheet PDF', filename: pdfName, format: 'pdf', sizeBytes: fileSize(pdfPath) }],
-      summary: { courses: courses.length, days: dates.length, papers, studentClashes: 0 },
-      meta: {
-        startDate: snap.start_date, endDate: snap.end_date, heading,
-        scheduleFile: result.schedule_file ? path.basename(result.schedule_file) : null,
-        programLevel: 'Undergraduate', semester: sem, year,
-        imported: true, special: true, label: label || undefined,
-        datasetFile: dataName, students: perStudent.size,
-        footerNote: footerNote || undefined, examRooms: examRooms.length ? examRooms : undefined,
-        config: { examType, startDate: dates[0], semester: sem, year },
-      },
-      status: 'ready',
-    });
-    try { await require('../utils/logger').logActivity('datesheet.import', `Imported datesheet "${heading}" — ${papers} papers, ${perStudent.size} students`, 'success'); } catch { /* optional */ }
+    try { await require('../utils/logger').logActivity('datesheet.import', `Imported datesheet "${baseHeading}" — ${papers} papers, ${perStudent.size} students${split ? ' (BS + B.Tech sheets)' : ''}`, 'success'); } catch { /* optional */ }
     return {
-      ok: true, record, papers, courses: courses.length, students: perStudent.size, days: dates.length, slots,
+      ok: true, record: records[0], records, sheets: records.length, papers, courses: courses.length, students: perStudent.size, days: dates.length, slots,
       skippedNoStudents: [...new Set(noStudents)],
+      // registered (theory) courses that have no paper on this datesheet — check these
+      coursesWithoutPaper: [...byCode.keys()].filter((c) => !seen.has(c) && !/^[A-Z]{2,4}L\d/.test(c)).sort(),
     };
   } finally {
     try { if (snapPath) fs.unlinkSync(snapPath); } catch { /* ignore */ }
