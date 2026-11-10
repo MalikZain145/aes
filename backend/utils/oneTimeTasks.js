@@ -1047,6 +1047,19 @@ async function fall26MidsOldBatches20261110() {
   return `imported ${r.papers} papers, ${r.students} students, ${r.days} days; archived ${oldIds.length} earlier datesheet(s) and ${cards} earlier special admit-card batch(es)`;
 }
 
+// 10 Nov 2026 (3): the special-exam (Fall-2026 mids, imported datesheet) admit cards
+// already issued → fee "Paid (Verified Manually)", as the exam office asked. Only the
+// current special batches; the regular exam's cards are not touched.
+async function specialFeeVerified20261110() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const AdmitVerification = require('../models/AdmitVerification');
+  const ids = (await GeneratedFile.find({ kind: 'admit_cards', 'meta.special': true, archived: { $ne: true } }).select('_id').lean()).map((b) => b._id);
+  if (!ids.length) return 'no special admit-card batch yet';
+  const r = await AdmitVerification.updateMany({ batchId: { $in: ids }, feeStatus: { $ne: FEE_VERIFIED } }, { $set: { feeStatus: FEE_VERIFIED } });
+  const n = r.modifiedCount != null ? r.modifiedCount : r.nModified;
+  return `${n} special admit card(s) set to "${FEE_VERIFIED}"`;
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1077,6 +1090,7 @@ const TASKS = [
   ['2026-10-22.fee-paid-verified-manually', feePaidManual20261022],
   ['2026-11-10.fall26-intake-mids', fall26IntakeMids20261110],
   ['2026-11-10.fall26-mids-old-batches', fall26MidsOldBatches20261110],
+  ['2026-11-10.special-fee-verified', specialFeeVerified20261110],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 

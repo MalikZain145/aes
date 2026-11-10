@@ -1129,7 +1129,9 @@ exports.generateAdmitCards = async (req, res) => {
       merged.dates.sort();
       Object.assign(merged, {
         exam_type: firstMeta.exam_type, semester: firstMeta.semester, year: firstMeta.year,
-        program_level: firstMeta.program_level, heading: firstMeta.heading,
+        program_level: firstMeta.program_level,
+        // one combined run: never label it with one part's suffix ("… — B.Tech")
+        heading: String(firstMeta.heading || '').replace(/\s*[—-]\s*(B\.?\s*Tech|BS)\s*$/i, ''),
       });
       mergedSchedulePath = path.join(OUTPUT_DIR, `acmerged_${Date.now()}.json`);
       fs.writeFileSync(mergedSchedulePath, JSON.stringify(merged));
@@ -1455,7 +1457,9 @@ exports.generateAdmitCards = async (req, res) => {
           // Fee gate: a freshly generated card is ALWAYS UNPAID → hidden on the
           // student portal, not emailable and not printable until Finance clears
           // the fee (by reg no. manually, or in bulk via the fee-paid list upload).
-          feeStatus: 'Unpaid',
+          // Special exam (imported datesheet, e.g. Fall-2026 intake mids): the exam
+          // office cleared these students' fee by hand → issued as verified.
+          feeStatus: allImported ? 'Paid (Verified Manually)' : 'Unpaid',
           heading: v.heading, examType: v.exam_type, semester: v.semester, year: v.year,
           exams: (s.exams || []).map((e) => ({
             code: e.code, name: e.name, teacher: e.teacher,

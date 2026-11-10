@@ -373,7 +373,6 @@ function ResultView({ result, onNext, onRetry }) {
   );
   return (
     <View style={styles.resultRoot}>
-      <Buttons top />
       <ScrollView contentContainerStyle={styles.resultScroll}>
         {result?.type === 'valid' && <ValidResult data={result.data} />}
         {result?.type === 'id' && <IdCardResult data={result.data} />}
