@@ -99,61 +99,54 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/abasyn_scheduler';
 
+// Start LISTENING IMMEDIATELY — before the DB connect + bootstrap below. The platform's
+// deploy health check (GET /api/health, which needs no database) then passes even on a
+// slow cold start of this large image, instead of the deploy timing out while the server
+// waited on connectDB/index-sync. The connection + startup tasks run in the background;
+// Mongoose buffers queries until the connection is ready, so API routes work the moment
+// the DB connects. Bind to 0.0.0.0 so phones on the same WiFi (the scanner) can reach it.
+app.listen(PORT, '0.0.0.0', () => {
+  const os = require('os');
+  const lans = [];
+  const ifaces = os.networkInterfaces();
+  for (const n of Object.keys(ifaces)) {
+    for (const i of ifaces[n] || []) {
+      if (i.family === 'IPv4' && !i.internal && !/^169\.254\./.test(i.address)) lans.push(i.address);
+    }
+  }
+  console.log(`\n🚀 Abasyn Scheduler API running on http://localhost:${PORT}`);
+  if (lans.length) {
+    console.log(`   Scanner / phone URL (same WiFi):`);
+    lans.forEach((a) => console.log(`      http://${a}:${PORT}`));
+  }
+  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+  ensureFirewallOpen(PORT);
+  console.log('');
+});
+
 (async () => {
-  await connectDB(MONGO_URI);
+  try { await connectDB(MONGO_URI); } catch (e) { console.error('DB connect failed:', e.message); }
   // Assignments became term-scoped — rebuild indexes so the old unique index
   // (type,department,program,batch) is replaced by (type,term,department,program,batch).
   try { await require('./models/Assignment').syncIndexes(); } catch (e) { console.warn('Assignment index sync:', e.message); }
-  // First-run bootstrap: on a brand-new database (e.g. a fresh Atlas cluster in
-  // production) there are no login accounts, so seed the staff accounts once. This
-  // makes a fresh deploy usable immediately — data is then imported in-app. Existing
-  // databases are untouched (it only runs when NO admin exists).
+  // First-run bootstrap: on a brand-new database there are no login accounts, so seed
+  // the staff accounts once. Existing databases are untouched (runs only when NO admin).
   try { await seedStaffIfEmpty(); } catch (e) { console.warn('Staff seed:', e.message); }
   // Office of Student Affairs login (created once if missing; never reset afterwards).
   try { await ensureAffairsAccount(); } catch (e) { console.warn('Student Affairs login:', e.message); }
-  // One-time maintenance (each runs once per database): remove the generated class
-  // timetables, set the Exam Cell / Finance login usernames.
-  // Runs in the BACKGROUND so a long task (datesheet / admit-card re-print) never
-  // delays the server from starting; each task logs its own result.
-  // Generated files live in the database too (GridFS) — restore any this disk is
-  // missing (a hosted server's disk is wiped on every restart), then keep it in step.
-  // Both run in the BACKGROUND: the server starts answering (QR scans, logins) at
-  // once instead of waiting for the file restore — on a free host that wakes from
-  // sleep, a blocking restore made the first scans time out. Files a request needs
-  // before the restore finishes are fetched on demand (fileStore.ensureLocal).
-  // One-time tasks still wait for the restore, since they work on those files.
+  // Generated files live in the database too (GridFS) — restore any this disk is missing
+  // (a hosted server's disk is wiped on every restart), then run the env-gated one-time
+  // maintenance tasks (which work on those files). Both in the BACKGROUND.
   Promise.resolve()
     .then(() => require('./utils/fileStore').init())
     .catch((e) => console.warn('File store:', e.message))
     .then(() => require('./utils/oneTimeTasks').runOneTimeTasks())
     .catch((e) => console.warn('One-time tasks:', e.message));
-  // Every registered student gets a Student Portal login (reg no / student123):
-  // created now for anyone missing, then new registration records are detected
-  // automatically and their logins are created too.
+  // Every registered student gets a Student Portal login (reg no / student123): created
+  // now for anyone missing, then new registration records get logins automatically.
   try { require('./utils/studentAccounts').startStudentAccountSync(); } catch (e) { console.warn('Student login sync:', e.message); }
-  // Security: any account that still uses a factory password (admin123, finance123,
-  // faculty123, student123) is flagged so its next sign-in forces a new password.
+  // Security: any account still on a factory password is flagged to force a reset next sign-in.
   setTimeout(() => flagDefaultPasswords().catch((e) => console.warn('Default-password audit:', e.message)), 15000);
-  // Bind to 0.0.0.0 so phones on the same WiFi (the QR scanner app) can reach it,
-  // not just localhost.
-  app.listen(PORT, '0.0.0.0', () => {
-    const os = require('os');
-    const lans = [];
-    const ifaces = os.networkInterfaces();
-    for (const n of Object.keys(ifaces)) {
-      for (const i of ifaces[n] || []) {
-        if (i.family === 'IPv4' && !i.internal && !/^169\.254\./.test(i.address)) lans.push(i.address);
-      }
-    }
-    console.log(`\n🚀 Abasyn Scheduler API running on http://localhost:${PORT}`);
-    if (lans.length) {
-      console.log(`   Scanner / phone URL (same WiFi):`);
-      lans.forEach((a) => console.log(`      http://${a}:${PORT}`));
-    }
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    ensureFirewallOpen(PORT);
-    console.log('');
-  });
 })();
 
 // Background audit: flag every account still using a default password. Staff
