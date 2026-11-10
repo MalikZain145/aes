@@ -992,7 +992,7 @@ async function feePaidManual20261022() {
 // the Admit Cards page (Special exam). Nothing else is changed.
 async function fall26IntakeMids20261110() {
   const GeneratedFile = require('../models/GeneratedFile');
-  const have = await GeneratedFile.findOne({ kind: 'datesheet', 'meta.imported': true, 'meta.label': 'Fall 2026 Intake' }).lean();
+  const have = await GeneratedFile.findOne({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30' }).lean();
   if (have) return 'already imported';
   const dir = path.join(__dirname, '..', 'data', 'imports', '2026-11-10');
   const plan = path.join(dir, 'datesheet.xlsx'); const data = path.join(dir, 'registrations.xlsx');
@@ -1007,6 +1007,44 @@ async function fall26IntakeMids20261110() {
     },
   });
   return `imported Fall 2026 intake mids datesheet: ${r.papers} papers, ${r.students} students, ${r.days} days`;
+}
+
+// 10 Nov 2026 (2): the same Fall-2026 mid-terms, now ALSO for older-batch students
+// registered in these courses (not SS108 Islamic Studies / SS118 Pakistan Studies),
+// SS216 moved to Tue 01-Dec (an older student had CS100 at the same time), OT206 (lab) removed, 445
+// students. The earlier "Fall 2026 Intake" import (Fall-2026 students only) and the
+// special admit cards issued from it are archived (replaced); the regular exam's
+// records are not touched. Admit cards are then issued from Admit Cards → Special exam.
+async function fall26MidsOldBatches20261110() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const WANT = 445;
+  // every earlier import of this exam (30 Nov start), whatever label it was given
+  const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } }).lean();
+  if (sheets.some((d) => Number(d.meta && d.meta.groupStudents) === WANT)) return 'already imported (445 students)';
+  const dir = path.join(__dirname, '..', 'data', 'imports', '2026-11-10');
+  const plan = path.join(dir, 'datesheet.xlsx'); const data = path.join(dir, 'registrations.xlsx');
+  if (!fs.existsSync(plan) || !fs.existsSync(data)) throw new Error(`files not found in ${dir}`);
+  const r = await require('../controllers/datesheetImportController').importPlan({
+    planFile: { path: plan, originalname: 'datesheet.xlsx' },
+    dataFile: { path: data, originalname: 'registrations.xlsx' },
+    body: {
+      label: 'Fall 2026 Intake', examType: 'mids', semester: 'Fall', year: '2026',
+      note: 'Note: The midterm exams of the following courses will be held during the class time from December 7, 2026 to December 11, 2026. The concerned course instructor will announce the date of the exam: LT102 Human Physiology, SU101 Medical Biochemistry-I, VS103 Biochemistry, VS105 Introduction to Optometry, RT101 Medical Biochemistry-I, MT100 Basic Mathematics.',
+      examRooms: ['Main Hall-B(J-Block)', 'Auditorium (J-205)', 'J-209', 'J-210', 'J-211', 'J-214'],
+    },
+  });
+  // replace the earlier import only after the new one succeeded
+  const oldIds = sheets.map((d) => d._id);
+  let cards = 0;
+  if (oldIds.length) {
+    await GeneratedFile.updateMany({ _id: { $in: oldIds } }, { $set: { archived: true, 'meta.replacedReason': 'replaced by the import with older-batch students (10 Nov 2026)' } });
+    const c = await GeneratedFile.updateMany(
+      { kind: 'admit_cards', 'meta.special': true, 'meta.importedDatesheetIds': { $in: oldIds }, archived: { $ne: true } },
+      { $set: { archived: true, 'meta.replacedReason': 'datesheet re-imported with older-batch students (10 Nov 2026)' } },
+    );
+    cards = c.modifiedCount || 0;
+  }
+  return `imported ${r.papers} papers, ${r.students} students, ${r.days} days; archived ${oldIds.length} earlier datesheet(s) and ${cards} earlier special admit-card batch(es)`;
 }
 
 const TASKS = [
@@ -1038,6 +1076,7 @@ const TASKS = [
   ['2026-10-20.add-7319-cs412-a', addAlina7319_20261020],
   ['2026-10-22.fee-paid-verified-manually', feePaidManual20261022],
   ['2026-11-10.fall26-intake-mids', fall26IntakeMids20261110],
+  ['2026-11-10.fall26-mids-old-batches', fall26MidsOldBatches20261110],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 

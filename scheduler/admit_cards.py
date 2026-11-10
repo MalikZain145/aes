@@ -531,6 +531,7 @@ def load_schedule_json(path: Path):
             "day": c.get("day") or DAY_NAMES[dt.weekday()],
             "slot_label": c.get("slot") or (slots[s_i] if s_i < len(slots) else ""),
             "name": c.get("name", ""), "teacher": "",
+            "group": str(c.get("group") or c["code"]),
         }
     dmeta = {
         "exam_type": (data.get("exam_type") or "finals").lower(),
@@ -2252,6 +2253,7 @@ def run(config: dict) -> dict:
         papers = []
         cell_courses = defaultdict(list)      # cell -> [codes] for this student
         seen_codes = set()                    # de-dup a student's own course list
+        seen_groups = set()                   # merged paper (A / B) = ONE seat
         for code in st["courses"]:
             # A student is seated ONCE per course — never two seats for one paper
             # even if the registration lists the code twice (duplicate enrollment).
@@ -2262,6 +2264,12 @@ def run(config: dict) -> dict:
             if not info:
                 continue  # excluded (FYP/internship) or not examinable
             cell = _cell_of(info)
+            # A student registered in two codes of the SAME merged paper (e.g.
+            # CET122 / CT343) writes that paper once — one seat, not a clash.
+            _g = (cell, info.get("group") or code)
+            if _g in seen_groups:
+                continue
+            seen_groups.add(_g)
             papers.append((code, cell, info))
             cell_courses[cell].append(code)
             session_attendance[cell].append({
