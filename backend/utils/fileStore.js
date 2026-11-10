@@ -33,11 +33,14 @@ function bucket() {
 async function stems() {
   const GeneratedFile = require('../models/GeneratedFile');
   const out = new Set();
-  for (const r of await GeneratedFile.find({}).select('files.filename').lean()) {
+  for (const r of await GeneratedFile.find({}).select('files.filename meta.datasetFile').lean()) {
     for (const f of r.files || []) {
       const n = path.basename(String(f.filename || ''));
       if (n) out.add(n.replace(/\.[^.]+$/, ''));
     }
+    // an imported datesheet's registration file (needed again for its admit cards)
+    const ds = r.meta && r.meta.datasetFile && path.basename(String(r.meta.datasetFile));
+    if (ds) out.add(ds.replace(/\.[^.]+$/, ''));
   }
   return out;
 }

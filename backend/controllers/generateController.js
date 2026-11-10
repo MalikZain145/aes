@@ -1091,6 +1091,17 @@ exports.generateAdmitCards = async (req, res) => {
     if (allImported && !uploadPath) {
       return res.status(400).json({ error: 'The registration file of this imported datesheet was not found — attach it here.' });
     }
+    // attached by hand because the saved copy was lost → keep it again for next time
+    if (allImported && req.file && datesheet.meta && datesheet.meta.datasetFile) {
+      const dn = path.basename(datesheet.meta.datasetFile);
+      try {
+        if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+        if (!fs.existsSync(path.join(OUTPUT_DIR, dn))) {
+          fs.copyFileSync(uploadPath, path.join(OUTPUT_DIR, dn));
+          require('../utils/fileStore').pushAll().catch(() => {});
+        }
+      } catch { /* best-effort */ }
+    }
 
     // Each datesheet's frozen schedule JSON (exact dates/times).
     const schedulePaths = datesheets

@@ -636,6 +636,7 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
   const [picked, setPicked] = useState([]);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(0);
+  const [regFile, setRegFile] = useState(null);
   useEffect(() => { if (!datesheets.some((d) => d._id === dsId)) setDsId(datesheets[0]?._id || ''); }, [datesheets]); // eslint-disable-line
   useEffect(() => {
     api.get('/rooms-labs/rooms').then((r) => setRooms(r.data.items || [])).catch(() => setRooms([]));
@@ -666,6 +667,7 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
       form.append('includeLabs', includeLabs ? 'true' : 'false');
       form.append('progressToken', token);
       form.append('examRooms', JSON.stringify(picked));
+      if (regFile) form.append('dataset', regFile);
       const res = await api.post('/generate/admit-cards', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60 * 60 * 1000 });
       const r = res.data.result || {};
       if (r.unseated_count) toast.error(`${r.unseated_count} paper-seat(s) could not be seated — the ticked rooms are too small.`);
@@ -694,6 +696,10 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
             {r.name} <span style={{ color: 'var(--muted)' }}>({seats(r)})</span>
           </label>
         ))}
+      </div>
+      <div style={{ marginTop: 12, fontSize: 12.5 }}>
+        <b>Registration file</b> <span style={{ color: 'var(--muted)' }}>(optional — only if asked: the file used when this datesheet was imported)</span>
+        <div style={{ marginTop: 4 }}><input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setRegFile(e.target.files?.[0] || null)} /></div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
         <button type="button" className="btn btn-primary" disabled={busy || !dsId} onClick={generate}>
