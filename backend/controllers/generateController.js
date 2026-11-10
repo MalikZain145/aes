@@ -1079,6 +1079,9 @@ exports.generateAdmitCards = async (req, res) => {
     if (!allImported && datesheets.some((d) => d.meta && d.meta.imported)) {
       return res.status(400).json({ error: 'An imported (special) datesheet is issued on its own — generate its admit cards separately.' });
     }
+    if (allImported && !(req.user && req.user.role === 'admin')) {
+      return res.status(403).json({ error: 'Special-exam admit cards are issued by the admin only.' });
+    }
     if (allImported && !uploadPath && datesheet.meta && datesheet.meta.datasetFile) {
       const dn = path.basename(datesheet.meta.datasetFile);
       try { await require('../utils/fileStore').ensureLocal(dn); } catch { /* best-effort */ }

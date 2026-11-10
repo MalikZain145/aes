@@ -21,12 +21,14 @@ function docMeta(label = '') {
 import { Link } from 'react-router-dom';
 import api, { errMsg } from '../api/client';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { PageHeader } from '../components/ui';
 import { downloadFile } from '../api/download';
 import './generate.css';
 import './datesheet.css';
 
 export default function AdmitCards() {
+  const { role } = useAuth();
   const toast = useToast();
 
   // ── inputs ──
@@ -273,7 +275,7 @@ export default function AdmitCards() {
         <div className="ac-how-item"><ClipboardList size={16} /> <span>One generation produces the full exam pack: <b>Admit Cards</b>, <b>Seating Plan</b>, <b>Identification Sheets</b> (attendance list per room &amp; course) and the <b>Invigilation Roster</b> — seats &amp; times match the admit card exactly.</span></div>
       </div>
 
-      {datesheets.some((d) => d.meta?.imported) && (
+      {role === 'admin' && datesheets.some((d) => d.meta?.imported) && (
         <SpecialExamPanel datesheets={datesheets.filter((d) => d.meta?.imported)} campusLine={campusLine} includeLabs={includeLabs}
           onDone={(res) => { setResult(res.data.result); setResultRecord(res.data.record || null); loadHistory(); }} />
       )}
@@ -644,7 +646,8 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
     const want = (ds?.meta?.examRooms || []).map((x) => String(x).toLowerCase());
     if (want.length && rooms.length) setPicked(rooms.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
   }, [dsId, rooms.length]); // eslint-disable-line
-  const seats = (r) => (r.examCapacity ? r.examCapacity * 2 : (r.capacity || 0));
+  // examCapacity IS the number of exam seats (the seating engine uses it as is)
+  const seats = (r) => (r.examCapacity || r.capacity || 0);
   const total = rooms.filter((r) => picked.includes(r.name)).reduce((n, r) => n + seats(r), 0);
   const toggle = (n) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
   const generate = async () => {
