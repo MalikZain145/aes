@@ -10,7 +10,7 @@ router.use(requireAuth);
 router.get('/count', requireRole('admin', 'finance'), ctrl.countRoomsLabs);
 
 // rooms
-router.get('/rooms', admin, ctrl.listRooms);
+router.get('/rooms', requireRole('admin', 'finance'), ctrl.listRooms);   // finance: read-only, for the Special-exam room picker
 router.post('/rooms', admin, ctrl.createRoom);
 router.put('/rooms/:id', admin, ctrl.updateRoom);
 router.delete('/rooms/:id', admin, ctrl.removeRoom);

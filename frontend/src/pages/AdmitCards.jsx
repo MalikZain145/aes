@@ -275,7 +275,7 @@ export default function AdmitCards() {
         <div className="ac-how-item"><ClipboardList size={16} /> <span>One generation produces the full exam pack: <b>Admit Cards</b>, <b>Seating Plan</b>, <b>Identification Sheets</b> (attendance list per room &amp; course) and the <b>Invigilation Roster</b> — seats &amp; times match the admit card exactly.</span></div>
       </div>
 
-      {role === 'admin' && datesheets.some((d) => d.meta?.imported) && (
+      {(role === 'admin' || role === 'finance') && datesheets.some((d) => d.meta?.imported) && (
         <SpecialExamPanel datesheets={datesheets.filter((d) => d.meta?.imported)} campusLine={campusLine} includeLabs={includeLabs}
           onDone={(res) => { setResult(res.data.result); setResultRecord(res.data.record || null); loadHistory(); }} />
       )}
