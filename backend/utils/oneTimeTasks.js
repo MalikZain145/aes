@@ -1071,7 +1071,8 @@ async function fall26MidsFinal20261111() {
   const GeneratedFile = require('../models/GeneratedFile');
   const WANT = 439;
   const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } }).lean();
-  if (sheets.some((d) => Number(d.meta && d.meta.groupStudents) === WANT && d.meta.planVersion === '2026-11-11')) return 'already imported (final, 439 students)';
+  // already in the system (this task, or imported by hand from Date Sheets with the same final file) → leave it
+  if (sheets.some((d) => Number(d.meta && d.meta.groupStudents) === WANT)) return 'already imported (final, 439 students)';
   const dir = path.join(__dirname, '..', 'data', 'imports', '2026-11-11');
   const plan = path.join(dir, 'datesheet.xlsx'); const data = path.join(dir, 'registrations.xlsx');
   if (!fs.existsSync(plan) || !fs.existsSync(data)) throw new Error(`files not found in ${dir} — use Date Sheets → Import datesheet instead`);
