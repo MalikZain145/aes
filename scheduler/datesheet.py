@@ -43,7 +43,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.lib.units import cm, mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage,
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, KeepTogether, PageBreak,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -2350,6 +2350,20 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
     ]
     tbl.setStyle(TableStyle(style))
 
+    # With an instructions note the sheet is laid out on TWO pages: the days are
+    # split in half (header row repeated) and the instructions sit right under the
+    # table's end on page 2 — never alone on an otherwise empty page.
+    _note_raw = str(meta.get("footer_note") or "").strip()
+    tbl_parts = [tbl]
+    if _note_raw and len(table_data) > 2:
+        body = table_data[1:]
+        cut = (len(body) + 1) // 2
+        tbl_parts = []
+        for chunk in (body[:cut], body[cut:]):
+            t = Table([table_data[0]] + chunk, colWidths=col_widths, repeatRows=1, splitByRow=1)
+            t.setStyle(TableStyle(style))
+            tbl_parts.append(t)
+
     # ---- header block (heading center, logo + date top-right) --------------
     heading_style = S("headingC", fontName="Helvetica-BoldOblique", fontSize=11,
                       leading=14, textColor=colors.black, alignment=TA_CENTER,
@@ -2385,15 +2399,26 @@ def generate_pdf(schedule, dates, slots, meta, output_path):
     story.append(Spacer(1, 8))
     story.append(Paragraph(f'<u>{heading}</u>', heading_style))
     story.append(Spacer(1, 12))
-    story.append(tbl)
+    for _i, _t in enumerate(tbl_parts):
+        if _i:
+            story.append(PageBreak())
+        story.append(_t)
+
+    # optional note (e.g. papers held in class) → an "Instructions" block right
+    # below the table, where the table ends (last page) — not on every page
+    note = str(meta.get("footer_note") or "").strip()
+    note = re.sub(r"^\s*(note|instructions?)\s*:\s*", "", note, flags=re.I)
+    note_para = None   # nothing is drawn in the page footer any more
+    if note:
+        ins_h = ParagraphStyle("insHead", fontName="Helvetica-Bold", fontSize=10.5, leading=13, textColor=_INK, alignment=TA_LEFT, spaceAfter=3)
+        ins_b = ParagraphStyle("insBody", fontName="Helvetica", fontSize=9, leading=12, textColor=_INK, alignment=TA_LEFT)
+        story.append(Spacer(1, 14))
+        story.append(KeepTogether([
+            Paragraph("<u>Instructions</u>", ins_h),
+            Paragraph(note.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br/>"), ins_b),
+        ]))
 
     # ---- footer with page numbers + Examination Office AUIC ----------------
-    # optional note printed at the bottom of EVERY page (e.g. papers held in class)
-    note = str(meta.get("footer_note") or "").strip()
-    note_para = None
-    if note:
-        note_style = ParagraphStyle("footNote", fontName="Helvetica", fontSize=7.8, leading=9.6, textColor=_INK, alignment=TA_LEFT)
-        note_para = Paragraph(note.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br/>"), note_style)
 
     def _footer(canvas, doc_):
         canvas.saveState()

@@ -597,11 +597,18 @@ def _batch_key(stu):
     return re.sub(r"\s+", " ", str(stu.get("batch") or stu.get("program") or "")).strip().lower()
 
 
+def _paper_of(stu):
+    """The QUESTION PAPER a student writes. A merged paper (e.g. SS104 / SS113 /
+    ENG101 / HM1033) is ONE paper under several course codes — for anti-cheating
+    and seating it counts as one course."""
+    return stu.get("paper") or stu.get("course")
+
+
 def _bench_ok(a, b):
     """Two students may share a bench: different paper AND different batch."""
     if a is None or b is None:
         return True
-    return a["course"] != b["course"] and _batch_key(a) != _batch_key(b)
+    return _paper_of(a) != _paper_of(b) and _batch_key(a) != _batch_key(b)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -788,8 +795,8 @@ def _separate_batches(layout):
                 me = out[i]["stu"]
                 # candidates on the same side: same course anywhere first, then same room
                 cands = [j for j, r in enumerate(out) if j != i and r["col"] == side and
-                         (r["stu"]["course"] == me["course"] or r["room"] == out[i]["room"])]
-                cands.sort(key=lambda j: (out[j]["stu"]["course"] != me["course"], out[j]["room"] != out[i]["room"]))
+                         (_paper_of(r["stu"]) == _paper_of(me) or r["room"] == out[i]["room"])]
+                cands.sort(key=lambda j: (_paper_of(out[j]["stu"]) != _paper_of(me), out[j]["room"] != out[i]["room"]))
                 for j in cands:
                     other = out[j]["stu"]
                     if _batch_key(other) == _batch_key(me):
@@ -836,18 +843,21 @@ def seat_session(session_students, venues, small_first=False):
     # imbalance (one course > half the slot) — the minimum possible.
     enr = defaultdict(list)
     seen = set()
+    # Seating unit = the QUESTION PAPER: the codes of a merged paper are seated as
+    # ONE course (one continuous sequence, never two of them on one bench).
     for st in session_students:
         k = (st["sid"], st["course"])
         if k in seen:
             continue
         seen.add(k)
-        enr[st["course"]].append({
+        enr[_paper_of(st)].append({
             "sid": st["sid"], "name": st.get("name", ""),
             "program": st.get("program", ""), "batch": st.get("batch", ""),
-            "course": st["course"],
+            "course": st["course"], "paper": _paper_of(st),
         })
     for c in enr:                                    # stable, deterministic order
-        enr[c].sort(key=lambda s: (str(s.get("batch", "")), str(s.get("sid", ""))))
+        # inside a merged paper: code by code, then batch, then reg no
+        enr[c].sort(key=lambda s: (str(s.get("course", "")), str(s.get("batch", "")), str(s.get("sid", ""))))
 
     # rooms LARGEST first; benches = real capacity/2 (rows). Only as many as needed.
     rooms = sorted(((v["name"], int(v.get("rows", 0) or 0)) for v in venues
@@ -911,10 +921,10 @@ def seat_session(session_students, venues, small_first=False):
     def _cost(out):
         rc = defaultdict(set)
         for r in out:
-            rc[r["room"]].add(r["stu"]["course"])
+            rc[r["room"]].add(_paper_of(r["stu"]))
         ns = [len(v) for v in rc.values()]
-        cnt = Counter((r["room"], r["stu"]["course"]) for r in out)
-        tot = Counter(r["stu"]["course"] for r in out)
+        cnt = Counter((r["room"], _paper_of(r["stu"])) for r in out)
+        tot = Counter(_paper_of(r["stu"]) for r in out)
         frag = sum(1 for (rm, c), v in cnt.items() if v < 5 and v < tot[c])
         return sum(max(0, n - 2) ** 2 for n in ns) * 10 + (max(ns) if ns else 0) + frag * 8
 
@@ -2275,6 +2285,8 @@ def run(config: dict) -> dict:
             session_attendance[cell].append({
                 "sid": st["sid"], "program": st["program"],
                 "batch": st["batch"], "course": code,
+                # merged codes share one question paper → one seating unit
+                "paper": f"{cell}|{info.get('group') or code}",
             })
         for cell, codes in cell_courses.items():
             if len(codes) > 1:                # same student, two papers at once

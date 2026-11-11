@@ -1060,6 +1060,113 @@ async function specialFeeVerified20261110() {
   return `${n} special admit card(s) set to "${FEE_VERIFIED}"`;
 }
 
+// 11 Nov 2026: FINAL Fall-2026 mid-term datesheet as the exam office fixed it —
+// the 21 one-student upper courses removed; older-batch students NOT in SS108, SS118,
+// SS216, MT129, PSY201, PSY202, PSY203 or any B.Tech course (Fall-2026 students only
+// there); HM1033 merged with SS104 / SS113 / ENG101 (Thu) and MD1073 moved to Fri
+// (keeps BE Civil at one paper a day). 439 students, 0 clashes. Every earlier import of
+// this exam (30 Nov start) and the special admit cards issued from it are archived
+// (replaced); the regular exam's records are not touched.
+async function fall26MidsFinal20261111() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const WANT = 439;
+  const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } }).lean();
+  if (sheets.some((d) => Number(d.meta && d.meta.groupStudents) === WANT && d.meta.planVersion === '2026-11-11')) return 'already imported (final, 439 students)';
+  const dir = path.join(__dirname, '..', 'data', 'imports', '2026-11-11');
+  const plan = path.join(dir, 'datesheet.xlsx'); const data = path.join(dir, 'registrations.xlsx');
+  if (!fs.existsSync(plan) || !fs.existsSync(data)) throw new Error(`files not found in ${dir} — use Date Sheets → Import datesheet instead`);
+  const r = await require('../controllers/datesheetImportController').importPlan({
+    planFile: { path: plan, originalname: 'datesheet.xlsx' },
+    dataFile: { path: data, originalname: 'registrations.xlsx' },
+    body: {
+      label: 'Fall 2026 Intake', examType: 'mids', semester: 'Fall', year: '2026',
+      note: 'Note: The midterm exams of the following courses will be held during the class time from December 7, 2026 to December 11, 2026. The concerned course instructor will announce the date of the exam: LT102 Human Physiology, SU101 Medical Biochemistry-I, VS103 Biochemistry, VS105 Introduction to Optometry, RT101 Medical Biochemistry-I, MT100 Basic Mathematics.',
+      examRooms: ['Main Hall-B(J-Block)', 'Auditorium (J-205)', 'J-209', 'J-210', 'J-211', 'J-214'],
+    },
+  });
+  const ids = (r.records || []).map((x) => x._id).filter(Boolean);
+  if (ids.length) await GeneratedFile.updateMany({ _id: { $in: ids } }, { $set: { 'meta.planVersion': '2026-11-11' } });
+  const oldIds = sheets.map((d) => d._id);
+  let cards = 0;
+  if (oldIds.length) {
+    await GeneratedFile.updateMany({ _id: { $in: oldIds } }, { $set: { archived: true, 'meta.replacedReason': 'replaced by the final datesheet (11 Nov 2026)' } });
+    const c = await GeneratedFile.updateMany(
+      { kind: 'admit_cards', 'meta.special': true, 'meta.importedDatesheetIds': { $in: oldIds }, archived: { $ne: true } },
+      { $set: { archived: true, 'meta.replacedReason': 'datesheet replaced by the final one (11 Nov 2026)' } },
+    );
+    cards = c.modifiedCount || 0;
+  }
+  return `imported ${r.papers} papers, ${r.students} students; archived ${oldIds.length} earlier datesheet(s) and ${cards} special admit-card batch(es)`;
+}
+
+// 11 Nov 2026 (2): Fall-2026 mids datesheets already imported → re-drawn with the
+// new layout: the note becomes an "Instructions" block under the table on the BS
+// sheet; the B.Tech sheet carries no note. Same papers, dates and students.
+async function fall26MidsRedraw20261111() {
+  return redrawFall26Imported((snap, rec) => { if (rec.meta.part === 'btech') snap.footer_note = ''; return true; });
+}
+
+// re-draws every current Fall-2026 mids imported datesheet after `mutate(snap, rec)`
+// changes its snapshot (returns false → that sheet is left as it is)
+async function redrawFall26Imported(mutate) {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const { OUTPUT_DIR, SCHEDULER_DIR, runPython, fileSize } = require('./pythonRunner');
+  const fstore = require('./fileStore');
+  const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } });
+  const done = [];
+  for (const rec of sheets) {
+    const sf = rec.meta && rec.meta.scheduleFile; if (!sf) continue;
+    const sp = path.join(OUTPUT_DIR, path.basename(sf));
+    try { if (!fs.existsSync(sp)) await fstore.ensureLocal(path.basename(sf)); } catch { /* checked below */ }
+    if (!fs.existsSync(sp)) { done.push(`${rec.title}: schedule missing`); continue; }
+    const snap = JSON.parse(fs.readFileSync(sp, 'utf-8'));
+    if (rec.meta.part === 'btech') snap.footer_note = '';
+    if (mutate(snap, rec) === false) { done.push(`${rec.title}: unchanged`); continue; }
+    const stamp = `${Date.now()}`;
+    const tmp = path.join(OUTPUT_DIR, `dsredraw_${stamp}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(snap));
+    const pdfName = `Datesheet_Mids_Imported_${stamp}_${rec.meta.part || 'bs'}.pdf`;
+    const out = path.join(OUTPUT_DIR, pdfName);
+    const cfg = path.join(OUTPUT_DIR, `dsredrawcfg_${stamp}.json`);
+    fs.writeFileSync(cfg, JSON.stringify({ schedule_json: tmp, out, drop_empty_slots: true }));
+    const { code, stdout } = await runPython(path.join(SCHEDULER_DIR, 'datesheet.py'), ['--render', cfg], { timeoutMs: 5 * 60 * 1000 });
+    try { fs.unlinkSync(cfg); fs.unlinkSync(tmp); } catch { /* ignore */ }
+    let r = {}; try { r = JSON.parse(String(stdout || '').trim().split('\n').filter(Boolean).pop() || '{}'); } catch { r = {}; }
+    if (code !== 0 || r.status !== 'ok' || !fs.existsSync(out)) throw new Error(`${rec.title}: ${r.error || 'render failed'}`);
+    rec.files = [{ label: 'Datesheet PDF', filename: pdfName, format: 'pdf', sizeBytes: fileSize(out) }];
+    rec.meta = { ...rec.meta, scheduleFile: path.basename(r.schedule_file), footerNote: rec.meta.part === 'btech' ? undefined : rec.meta.footerNote };
+    rec.markModified('meta'); rec.markModified('files');
+    await rec.save();
+    done.push(`${rec.title} (${rec.meta.part || 'bs'}) re-drawn`);
+    await new Promise((res) => setTimeout(res, 5));
+  }
+  try { await fstore.pushAll(); } catch { /* best-effort */ }
+  return done.join('; ') || 'nothing to re-draw';
+}
+
+// 11 Nov 2026 (3): exam office swap — RT102 Human Physiology → Monday 30-Nov and
+// RT103 Human Anatomy → Friday 04-Dec (same 03:00-04:30 slot; same 41 students, no
+// clash). Applied to the datesheets already in the system and re-drawn.
+async function fall26RtSwap20261111() {
+  const MOVE = { RT102: '2026-11-30', RT103: '2026-12-04' };
+  return redrawFall26Imported((snap) => {
+    let n = 0;
+    for (const c of snap.courses || []) {
+      const to = MOVE[String(c.code).toUpperCase()];
+      if (!to || c.date === to) continue;
+      const di = (snap.dates || []).indexOf(to);
+      if (di < 0) continue;
+      const d = new Date(`${to}T00:00:00Z`);
+      c.date = to;
+      c.day_index = di;
+      c.date_disp = `${String(d.getUTCDate()).padStart(2, '0')}-${d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}-${d.getUTCFullYear()}`;
+      c.day = d.toLocaleString('en-US', { weekday: 'long', timeZone: 'UTC' });
+      n += 1;
+    }
+    return n > 0;
+  });
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1091,6 +1198,9 @@ const TASKS = [
   ['2026-11-10.fall26-intake-mids', fall26IntakeMids20261110],
   ['2026-11-10.fall26-mids-old-batches', fall26MidsOldBatches20261110],
   ['2026-11-10.special-fee-verified', specialFeeVerified20261110],
+  ['2026-11-11.fall26-mids-final', fall26MidsFinal20261111],
+  ['2026-11-11.fall26-mids-redraw', fall26MidsRedraw20261111],
+  ['2026-11-11.fall26-rt-swap', fall26RtSwap20261111],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 

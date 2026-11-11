@@ -208,7 +208,8 @@ async function importPlan({ planFile, dataFile, body = {} }) {
         start_date: dispOf(myDates[0]), end_date: dispOf(myDates[myDates.length - 1]),
         dates: myDates, slots: mySlots,
         courses: mine.map((c) => ({ ...c, day_index: myDates.indexOf(c.date), slot_index: mySlots.indexOf(c.slot) })),
-        excluded_codes: [], footer_note: footerNote,
+        // the note (BS papers held in class) is printed on the BS sheet only, never on B.Tech
+        excluded_codes: [], footer_note: pt.key === 'btech' ? '' : footerNote,
       };
       snapPath = path.join(OUTPUT_DIR, `dsconfig_${stamp}_${pt.key}_snap.json`);
       fs.writeFileSync(snapPath, JSON.stringify(snap));

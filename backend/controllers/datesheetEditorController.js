@@ -98,6 +98,32 @@ async function studentsFor(cohort, excludeBatches) {
   return { byCode, info };
 }
 
+/**
+ * An IMPORTED (special) datesheet is checked against ITS OWN registration file —
+ * not the whole system's registrations (its students and their courses were
+ * chosen by the exam office: e.g. older batches left out of some papers).
+ */
+async function studentsForImported(rec) {
+  const dn = rec.meta && rec.meta.datasetFile && path.basename(rec.meta.datasetFile);
+  if (!dn) throw Object.assign(new Error('The registration file of this imported datesheet is missing — import it again.'), { status: 400 });
+  const p = path.join(OUTPUT_DIR, dn);
+  try { if (!fs.existsSync(p)) await require('../utils/fileStore').ensureLocal(dn); } catch { /* checked below */ }
+  if (!fs.existsSync(p)) throw Object.assign(new Error('The registration file of this imported datesheet was not found — import it again.'), { status: 400 });
+  const { parseDataset } = require('../utils/datasetImporter');
+  const regs = parseDataset(p).studentRegistrations || [];
+  const byCode = new Map(); const info = {};
+  for (const r of regs) {
+    const sid = String(r.studentId);
+    info[sid] = [r.name || '', r.batch || r.program || ''];
+    for (const c of new Set((r.courses || []).map(up))) {
+      if (!byCode.has(c)) byCode.set(c, []);
+      byCode.get(c).push(sid);
+    }
+  }
+  return { byCode, info };
+}
+const isImported = (rec) => !!(rec && rec.meta && rec.meta.imported);
+
 /** the snapshot → editor units; merged papers share a group id */
 function snapToCourses(snap, slots) {
   const dates = snap.dates || [];
@@ -120,16 +146,26 @@ function snapToCourses(snap, slots) {
 }
 
 /** other datesheets of the same cohort & exam (e.g. department PDFs of one run) */
-async function externalPapers(rec, cohort) {
-  const others = await GeneratedFile.find({ kind: 'datesheet', examType: rec.examType, archived: { $ne: true }, _id: { $ne: rec._id } }).lean();
+async function externalPapers(rec, cohort, onSheet) {
+  const imp = isImported(rec);
+  const q = { kind: 'datesheet', examType: rec.examType, archived: { $ne: true }, _id: { $ne: rec._id } };
+  // imported: only the other part (BS ↔ B.Tech) of the SAME import; regular: never an imported one
+  if (imp) q['meta.importGroup'] = rec.meta.importGroup || '__none__';
+  else q['meta.imported'] = { $ne: true };
+  const others = await GeneratedFile.find(q).lean();
   const out = [];
   for (const o of others) {
-    if (datesheetCohort(o) !== cohort) continue;
+    if (!imp && datesheetCohort(o) !== cohort) continue;
     const sf = o.meta && o.meta.scheduleFile; const p = sf ? path.join(OUTPUT_DIR, path.basename(sf)) : null;
     if (!p || !fs.existsSync(p)) continue;
     try {
       const sn = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      for (const c of sn.courses || []) out.push({ code: up(c.code), name: c.name || '', date: c.date, slot: c.slot, sheet: o.title });
+      for (const c of sn.courses || []) {
+        // a paper printed on both parts (e.g. SS118 on BS and B.Tech) is ONE sitting —
+        // the copy being edited here is the one that counts
+        if (imp && onSheet && onSheet.has(up(c.code))) continue;
+        out.push({ code: up(c.code), name: c.name || '', date: c.date, slot: c.slot, sheet: o.title });
+      }
     } catch { /* skip unreadable */ }
   }
   return out;
@@ -182,8 +218,8 @@ exports.openEditor = async (req, res) => {
     const { slots, allowed, reserve } = gridFor(cohort, snap.slots || [], dates);
     const courses = snapToCourses(snap, slots);
     const excludeBatches = (rec.meta && (rec.meta.excludeBatches || (rec.meta.config && rec.meta.config.excludeBatches))) || [];
-    const { byCode, info } = await studentsFor(cohort, excludeBatches);
-    const external = await externalPapers(rec, cohort);
+    const { byCode, info } = isImported(rec) ? await studentsForImported(rec) : await studentsFor(cohort, excludeBatches);
+    const external = await externalPapers(rec, cohort, new Set(courses.map((c) => c.code)));
     const need = new Set([...courses.map((c) => c.code), ...external.map((e) => e.code)]);
     const students = {}; const used = new Set();
     for (const c of need) { students[c] = byCode.get(c) || []; for (const s of students[c]) used.add(s); }
@@ -236,8 +272,8 @@ exports.saveEditor = async (req, res) => {
       gcell.set(c.group, `${c.d}|${c.s}`);
     }
     const excludeBatches = (rec.meta && (rec.meta.excludeBatches || (rec.meta.config && rec.meta.config.excludeBatches))) || [];
-    const { byCode } = await studentsFor(cohort, excludeBatches);
-    const external = await externalPapers(rec, cohort);
+    const { byCode } = isImported(rec) ? await studentsForImported(rec) : await studentsFor(cohort, excludeBatches);
+    const external = await externalPapers(rec, cohort, new Set(courses.map((c) => c.code)));
     const clashes = findClashes(courses, dates, slots, allowed, byCode, external);
     if (clashes.length) {
       return res.status(409).json({ error: `Not saved — ${clashes.length} clash(es). Fix them first.`, clashes: clashes.slice(0, 50) });
