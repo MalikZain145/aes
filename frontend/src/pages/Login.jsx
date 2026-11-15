@@ -21,9 +21,9 @@ const PORTAL_TEXT = {
   campus: {
     title: 'Sign in to your account',
     sub: 'For students and faculty of Abasyn University, Islamabad Campus.',
-    userLabel: 'Registration no. / Username',
-    userPh: 'e.g. AUIC-SG23-0000',
-    hint: 'Students sign in with their registration number. Forgot your password? Contact the Exam Cell.',
+    userLabel: 'Registration No. / Email',
+    userPh: '0000 / you@example.com',
+    hint: 'Students sign in with their registration number, faculty with their email.',
   },
   staff: {
     title: 'Sign in to administrator account',

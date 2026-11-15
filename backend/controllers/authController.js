@@ -44,6 +44,28 @@ exports.login = async (req, res) => {
     const alnum = uname.replace(/[^a-z0-9]/g, '');
     if (alnum && alnum !== uname) user = await User.findOne({ username: alnum, role: 'student' });
   }
+  // Students may type just the last part of their registration number
+  // (e.g. "7828" for AUIC-SG23-7828). If two students share that number, the
+  // password decides; if it still matches more than one, ask for the full number.
+  if (!user && /^\d{3,6}$/.test(uname)) {
+    const digits = uname.replace(/^0+/, '') || '0';
+    const candidates = await User.find({ role: 'student', active: true, regNo: { $regex: `(^|[^0-9])0*${digits}$` } });
+    if (candidates.length === 1) {
+      user = candidates[0];
+    } else if (candidates.length > 1) {
+      const hits = [];
+      for (const c of candidates) {
+        if (!c.isLocked() && (await c.verifyPassword(password))) hits.push(c);
+      }
+      if (hits.length === 1) user = hits[0];
+      else if (hits.length > 1) {
+        return res.status(409).json({ error: 'More than one student has this number. Please enter your full registration number (e.g. AUIC-SG23-0000).' });
+      } else {
+        await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150)));
+        return res.status(401).json({ error: BAD_LOGIN });
+      }
+    }
+  }
   if (!user || !user.active) {
     // spend similar time as a real check so timing does not reveal valid usernames
     await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150)));
@@ -72,16 +94,13 @@ exports.login = async (req, res) => {
     return res.status(401).json({ error: msg });
   }
 
-  // Right password, wrong door → no session; point the user to the right page.
+  // Right password, wrong door → no session, and the SAME answer as a wrong
+  // password, so the page never reveals that the account exists or where it signs in.
   const allowed = PORTAL_ROLES[portal];
   if (allowed && !allowed.includes(user.role)) {
     await logActivity('auth.wrong-portal', `${user.username} (${user.role}) tried the ${portal} sign-in page`, 'warning');
-    return res.status(403).json({
-      error: portal === 'staff'
-        ? 'This page is for the Exam Cell and Finance Office. Students and faculty sign in at the main sign-in page.'
-        : 'Staff accounts sign in at /admin.',
-      code: 'WRONG_PORTAL',
-    });
+    await new Promise((r) => setTimeout(r, 250 + Math.floor(Math.random() * 150)));
+    return res.status(401).json({ error: BAD_LOGIN });
   }
 
   // Signed in with a factory / default password (student123, faculty123,

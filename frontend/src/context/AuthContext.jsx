@@ -13,7 +13,7 @@ export function AuthProvider({ children }) {
   // Validate stored token on load. We enforce a minimum display time for the
   // preloader so it plays smoothly instead of flashing for a split second.
   useEffect(() => {
-    const MIN_BOOT_MS = 3600; // preloader: ABASYN + Scheduler fill, tagline, then a smooth fade
+    const MIN_BOOT_MS = 7000; // preloader: 5 s bottom-to-top fill, glow, tagline, then a smooth fade
     const startedAt = Date.now();
     const finish = () => {
       const elapsed = Date.now() - startedAt;

@@ -1,7 +1,14 @@
 /* ABASYN (green) over Scheduler (gold) — wordmark used in place of the logo */
 .wm { display: inline-flex; flex-direction: column; align-items: center; line-height: 1; user-select: none; }
+.wm-words { position: relative; display: flex; flex-direction: column; align-items: center; overflow: hidden; padding: 6px 10px; }
 .wm-word { position: relative; display: inline-block; }
+.wm-shine {
+  position: absolute; left: -10%; width: 120%; height: 40px; top: 50%;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  filter: blur(8px); pointer-events: none;
+}
 .wm-layer { position: absolute; left: 0; top: 0; }
+.wm-abasyn .wm-layer { left: 0.14em; } /* match the word's left padding so fill sits on the outline */
 .wm-abasyn {
   font-family: var(--font-display, 'Fraunces', Georgia, serif);
   font-weight: 700; letter-spacing: 0.14em; padding-left: 0.14em; /* keep optical centre */
@@ -12,7 +19,8 @@
   font-weight: 600; font-style: italic; letter-spacing: 0.02em;
   font-size: 23px; margin-top: 4px;
 }
-.wm-ghost { color: transparent; -webkit-text-stroke: 1px currentColor; opacity: 0.35; }
+.wm-ghost { color: transparent; -webkit-text-stroke: 1px rgba(234, 244, 238, 0.5); }
+.wm-light .wm-ghost { -webkit-text-stroke-color: rgba(15, 61, 46, 0.35); }
 
 /* green → deeper green, bottom to top */
 .wm-abasyn .wm-solid {
@@ -25,6 +33,8 @@
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .wm-tagline {
+  align-self: center; text-align: center; max-width: 92vw;
+  padding-left: 0.2em; /* balances the trailing letter-spacing so it sits truly centred */
   margin-top: 14px; font-family: var(--font-body, 'Inter', system-ui, sans-serif);
   font-size: 12px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
 }
@@ -47,7 +57,9 @@
 @media (max-width: 560px) {
   .wm-lg .wm-abasyn { font-size: 48px; }
   .wm-lg .wm-sched { font-size: 27px; }
+  .wm-lg .wm-tagline { font-size: 11px; letter-spacing: 0.14em; padding-left: 0.14em; line-height: 1.6; }
 }
 @media (prefers-reduced-motion: reduce) {
   .wm-layer { clip-path: none !important; }
+  .wm-shine { display: none; }
 }

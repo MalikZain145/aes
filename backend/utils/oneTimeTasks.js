@@ -3,6 +3,8 @@
  * Each job records its key in the Setting collection after it succeeds, so a
  * restart never repeats it. Runs automatically when the server starts.
  *
+ *   2026-11-15.reset-portal-passwords  every student login → student123, every faculty login
+ *                                → faculty123 (must change at next sign-in; staff untouched).
  *   2026-10-12.clear-timetables  remove every generated class timetable (engine runs,
  *                                their entries and old timetable files) so students and
  *                                faculty no longer see one. A JSON backup is written to
@@ -1168,6 +1170,31 @@ async function fall26RtSwap20261111() {
   });
 }
 
+// Reset every student login to "student123" and every faculty login to "faculty123"
+// (exam office request, 15 Nov 2026). Both are default passwords, so each account
+// must set its own password at the next sign-in; old sessions are signed out.
+// Staff (admin / finance / affairs) accounts are not touched. A backup of the old
+// password hashes is written to scheduler/output first.
+async function resetPortalPasswords20261115() {
+  const User = require('../models/User');
+  const bcrypt = require('bcryptjs');
+  const users = await User.find({ role: { $in: ['student', 'faculty'] } }, { _id: 1, role: 1, passwordHash: 1, mustChangePassword: 1, tokenVersion: 1 }).lean();
+  try {
+    if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    fs.writeFileSync(path.join(OUTPUT_DIR, `backup_portal_passwords_${Date.now()}.json`), JSON.stringify(users));
+  } catch (e) { console.warn('   password backup failed:', e.message); }
+  const out = [];
+  for (const [role, plain] of [['student', 'student123'], ['faculty', 'faculty123']]) {
+    const hash = await bcrypt.hash(plain, await bcrypt.genSalt(10));
+    const r = await User.updateMany(
+      { role },
+      { $set: { passwordHash: hash, passwordChangedAt: new Date(), mustChangePassword: true, failedLogins: 0, lockUntil: null }, $inc: { tokenVersion: 1 } }
+    );
+    out.push(`${r.modifiedCount ?? r.nModified ?? 0} ${role} account(s) → ${plain}`);
+  }
+  return out.join('; ');
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1202,6 +1229,7 @@ const TASKS = [
   ['2026-11-11.fall26-mids-final', fall26MidsFinal20261111],
   ['2026-11-11.fall26-mids-redraw', fall26MidsRedraw20261111],
   ['2026-11-11.fall26-rt-swap', fall26RtSwap20261111],
+  ['2026-11-15.reset-portal-passwords', resetPortalPasswords20261115],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 
