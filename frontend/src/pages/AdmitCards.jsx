@@ -41,6 +41,9 @@ export default function AdmitCards() {
   const [includeLabs, setIncludeLabs] = useState(false);
 
   const [venueInfo, setVenueInfo] = useState(null);
+  const [roomList, setRoomList] = useState([]);
+  const [roomMode, setRoomMode] = useState('all');
+  const [roomPicked, setRoomPicked] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
@@ -130,6 +133,9 @@ export default function AdmitCards() {
     } catch { /* ignore */ }
   };
   useEffect(() => { loadDatesheets(); loadHistory(); loadVenues(); }, []); // eslint-disable-line
+  useEffect(() => {
+    api.get('/rooms-labs/rooms').then((r) => setRoomList(r.data.items || [])).catch(() => setRoomList([]));
+  }, []);
 
   // A datesheet's cohort: pg (MS), btech (B.Tech / Engineering Technology), or bs.
   const dsCohort = (d) => {
@@ -158,6 +164,14 @@ export default function AdmitCards() {
     return by;
   }, [datesheets]);
   const missingCohorts = ['bs', 'btech', 'pg'].filter((c) => !latestByCohort[c]);
+  // the room choice saved with the latest datesheets (last run by admin or finance)
+  useEffect(() => {
+    const sv = savedRooms(['bs', 'btech', 'pg'].map((c) => latestByCohort[c]).filter(Boolean));
+    if (!sv) return;
+    setRoomMode(sv.mode);
+    const want = sv.rooms.map((x) => String(x).toLowerCase());
+    setRoomPicked(roomList.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
+  }, [latestByCohort, roomList.length]); // eslint-disable-line
   const canGenerate = missingCohorts.length === 0;
 
   // When the BS/B.Tech/MS switch changes, pre-tick that cohort's datesheets (of
@@ -188,6 +202,7 @@ export default function AdmitCards() {
 
   const validate = () => {
     if (!selectedDsIds.length) { toast.error('Tick at least one datesheet for these admit cards.'); return false; }
+    if (roomMode === 'selective' && !roomPicked.length) { toast.error('Tick at least one exam room, or choose "Use all rooms".'); return false; }
     // Registration file is OPTIONAL — without it, cards build from the database.
     if (venueInfo && venueInfo.rooms === 0 && venueInfo.labs === 0) {
       toast.error('No rooms or labs in the database. Add exam venues under Rooms & Labs first.'); return false;
@@ -231,6 +246,7 @@ export default function AdmitCards() {
       form.append('campusLine', campusLine);
       form.append('includeLabs', includeLabs ? 'true' : 'false');
       form.append('progressToken', token);
+      form.append('examRooms', JSON.stringify(roomMode === 'selective' ? roomPicked : []));
       const res = await api.post('/generate/admit-cards', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 90 * 60 * 1000,   // 5,000–10,000 cards can take a while; don't abort early
@@ -355,6 +371,8 @@ export default function AdmitCards() {
               <input type="checkbox" checked={includeLabs} onChange={(e) => setIncludeLabs(e.target.checked)} />
               <span>Use labs as exam venues too (in addition to theory rooms)</span>
             </label>
+
+            <RoomPicker rooms={roomList} mode={roomMode} setMode={setRoomMode} picked={roomPicked} setPicked={setRoomPicked} />
 
             {!canGenerate && (
               <div className="ac-gate" style={{ margin: '10px 0', padding: '10px 12px', borderRadius: 10, background: 'var(--warn-bg, #fff4e5)', color: 'var(--warn-fg, #8a5a00)', fontSize: 13, border: '1px solid var(--border)' }}>
@@ -618,6 +636,56 @@ export default function AdmitCards() {
 
 /* Special exam (imported datesheet, e.g. a new intake's mid-terms): its own admit
    cards, seated only in the rooms ticked here. The regular exam is not touched. */
+// Exam rooms for a run: ALL rooms, or SELECTIVE rooms with each room's exam seats.
+// The choice is saved on the datesheet(s) after generation, so the next run — by
+// the admin or Finance — opens with the same rooms.
+// examCapacity IS the number of exam seats (the seating engine uses it as is)
+const roomSeats = (r) => (r.examCapacity || r.capacity || 0);
+function RoomPicker({ rooms, mode, setMode, picked, setPicked, need }) {
+  const total = rooms.filter((r) => picked.includes(r.name)).reduce((n, r) => n + roomSeats(r), 0);
+  const allSeats = rooms.reduce((n, r) => n + roomSeats(r), 0);
+  const toggle = (n) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Exam rooms</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className={`ds-seg-btn sm ${mode === 'all' ? 'active' : ''}`} onClick={() => setMode('all')}>Use all rooms ({rooms.length} · {allSeats} seats)</button>
+        <button type="button" className={`ds-seg-btn sm ${mode === 'selective' ? 'active' : ''}`} onClick={() => setMode('selective')}>Selective rooms</button>
+      </div>
+      {mode === 'selective' && (
+        <>
+          <div style={{ fontSize: 12.5, margin: '8px 0 4px', color: 'var(--muted)' }}>
+            {picked.length ? <><b style={{ color: 'var(--text)' }}>{picked.length}</b> room(s) ticked · <b style={{ color: 'var(--text)' }}>{total}</b> exam seats</> : 'Tick the rooms to use'}
+            {need ? <> · busiest sitting needs about <b style={{ color: total && total < need ? '#b42318' : 'var(--text)' }}>{need}</b> seats</> : null}
+            {picked.length > 0 && <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 8, padding: '0 6px' }} onClick={() => setPicked([])}>Clear</button>}
+            {picked.length < rooms.length && <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 4, padding: '0 6px' }} onClick={() => setPicked(rooms.map((r) => r.name))}>Tick all</button>}
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 200, overflow: 'auto' }}>
+            {rooms.map((r) => (
+              <label key={r._id || r.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, padding: '4px 8px', borderRadius: 8, cursor: 'pointer',
+                border: `1px solid ${picked.includes(r.name) ? '#0f5132' : 'var(--border,#ddd)'}`, background: picked.includes(r.name) ? '#e7f3ec' : 'transparent' }}>
+                <input type="checkbox" checked={picked.includes(r.name)} onChange={() => toggle(r.name)} />
+                {r.name} <span style={{ color: 'var(--muted)' }}>({roomSeats(r)})</span>
+              </label>
+            ))}
+            {!rooms.length && <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>No rooms found under Rooms &amp; Labs.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// the saved room choice of a set of datesheets → { mode, rooms }
+function savedRooms(list) {
+  for (const d of list || []) {
+    const m = d?.meta || {};
+    if (m.roomMode === 'all') return { mode: 'all', rooms: [] };
+    if ((m.examRooms || []).length) return { mode: 'selective', rooms: m.examRooms };
+  }
+  return null;
+}
+
 function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone }) {
   const toast = useToast();
   // one entry per import (BS + B.Tech sheets of the same import are issued together)
@@ -634,6 +702,7 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
   const [dsId, setDsId] = useState(datesheets[0]?._id || '');
   const [rooms, setRooms] = useState([]);
   const [picked, setPicked] = useState([]);
+  const [roomMode, setRoomMode] = useState('selective');
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(0);
   const [regFile, setRegFile] = useState(null);
@@ -642,18 +711,17 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
     api.get('/rooms-labs/rooms').then((r) => setRooms(r.data.items || [])).catch(() => setRooms([]));
   }, []);
   const ds = datesheets.find((d) => d._id === dsId);
-  // rooms suggested with the imported datesheet are ticked by default
+  // the rooms saved with this datesheet (last run / suggested at import) are pre-selected
   useEffect(() => {
-    const want = (ds?.meta?.examRooms || []).map((x) => String(x).toLowerCase());
-    if (want.length && rooms.length) setPicked(rooms.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
+    const sv = savedRooms(sheets.filter((d) => (ds?.ids || []).includes(d._id)));
+    if (!sv) return;
+    setRoomMode(sv.mode);
+    const want = sv.rooms.map((x) => String(x).toLowerCase());
+    if (rooms.length) setPicked(rooms.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
   }, [dsId, rooms.length]); // eslint-disable-line
-  // examCapacity IS the number of exam seats (the seating engine uses it as is)
-  const seats = (r) => (r.examCapacity || r.capacity || 0);
-  const total = rooms.filter((r) => picked.includes(r.name)).reduce((n, r) => n + seats(r), 0);
-  const toggle = (n) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
   const generate = async () => {
     if (!dsId) return;
-    if (!picked.length && !window.confirm('No exam room ticked — seat the students in ALL rooms?')) return;
+    if (roomMode === 'selective' && !picked.length) { toast.error('Tick at least one room, or choose "Use all rooms".'); return; }
     setBusy(true); setDone(0);
     const token = (window.crypto?.randomUUID?.() || `t${Date.now()}${Math.random()}`).replace(/[^a-zA-Z0-9-]/g, '');
     const poll = setInterval(async () => {
@@ -666,7 +734,7 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
       form.append('campusLine', campusLine || '');
       form.append('includeLabs', includeLabs ? 'true' : 'false');
       form.append('progressToken', token);
-      form.append('examRooms', JSON.stringify(picked));
+      form.append('examRooms', JSON.stringify(roomMode === 'selective' ? picked : []));
       if (regFile) form.append('dataset', regFile);
       const res = await api.post('/generate/admit-cards', form, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60 * 60 * 1000 });
       const r = res.data.result || {};
@@ -679,24 +747,15 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
   return (
     <div className="card" style={{ padding: 18, marginBottom: 16, border: '1px solid #c9a227' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-        <Sparkles size={16} color="#9a7a12" /><b>Special exam (imported datesheet)</b>
+        <Sparkles size={16} color="#9a7a12" /><b>Special exam (imported / floaters datesheet)</b>
       </div>
       <p className="ds-source-note" style={{ marginTop: 0 }}>
-        Cards for the students of the imported datesheet only, seated in the rooms you tick. The regular exam's cards, seating and attendance stay as they are; earlier cards keep their own status.
+        Cards for the students of this special datesheet only (a new intake, with or without floaters), seated in the rooms you choose. The regular exam's cards, seating and attendance stay as they are; earlier cards keep their own status.
       </p>
       <select className="input" value={dsId} onChange={(e) => setDsId(e.target.value)} style={{ maxWidth: 560 }}>
         {datesheets.map((d) => <option key={d._id} value={d._id}>{(d.meta?.heading || d.title).replace(/ — B\.Tech$/, '')}{d.parts.length ? ` · ${d.parts.join(' + ')} sheets` : ''}{d.meta?.students ? ` · ${d.meta.students} students` : ''}</option>)}
       </select>
-      <div style={{ marginTop: 12, fontSize: 13, fontWeight: 700 }}>Exam rooms <span style={{ fontWeight: 400, color: 'var(--muted)' }}>· {picked.length ? `${picked.length} ticked · ${total} seats` : 'none ticked (all rooms)'}</span></div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, maxHeight: 180, overflow: 'auto' }}>
-        {rooms.map((r) => (
-          <label key={r._id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, padding: '4px 8px', borderRadius: 8, cursor: 'pointer',
-            border: `1px solid ${picked.includes(r.name) ? '#0f5132' : 'var(--border,#ddd)'}`, background: picked.includes(r.name) ? '#e7f3ec' : 'transparent' }}>
-            <input type="checkbox" checked={picked.includes(r.name)} onChange={() => toggle(r.name)} />
-            {r.name} <span style={{ color: 'var(--muted)' }}>({seats(r)})</span>
-          </label>
-        ))}
-      </div>
+      <RoomPicker rooms={rooms} mode={roomMode} setMode={setRoomMode} picked={picked} setPicked={setPicked} />
       <div style={{ marginTop: 12, fontSize: 12.5 }}>
         <b>Registration file</b> <span style={{ color: 'var(--muted)' }}>(optional — only if asked: the file used when this datesheet was imported)</span>
         <div style={{ marginTop: 4 }}><input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setRegFile(e.target.files?.[0] || null)} /></div>

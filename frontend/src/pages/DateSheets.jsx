@@ -101,6 +101,12 @@ export default function DateSheets() {
   const [courseLoading, setCourseLoading] = useState(false);
   const [courseSearch, setCourseSearch] = useState('');
   const [removedCodes, setRemovedCodes] = useState([]);  // course codes to drop
+  // a removed course can be removed for ONE group only: 'both' | 'new' | 'old'
+  const [removeScope, setRemoveScope] = useState({});
+  // floaters: older students of the removed batches who take the kept batches' courses
+  const [includeFloaters, setIncludeFloaters] = useState(false);
+  // "Instructions" printed under the table of the BS datesheet (never on B.Tech)
+  const [instructions, setInstructions] = useState('');
   // code -> { reason, source: 'rule' | 'db' | 'file' } for courses pre-selected automatically
   const [autoNoExam, setAutoNoExam] = useState({});
   const [noExamFileBusy, setNoExamFileBusy] = useState(false);
@@ -387,6 +393,10 @@ export default function DateSheets() {
     setResult(null);
     setLastGroups(groups || []);
     try {
+      // removed for BOTH groups → dropped completely; for one group → courseScope
+      const scopeMap = {};
+      for (const c of removedCodes || []) { const v = removeScope[c]; if (v === 'new' || v === 'old') scopeMap[c] = v; }
+      const fullyRemoved = (removedCodes || []).filter((c) => !scopeMap[c]);
       let res;
       if (dataSource === 'upload') {
         // Generate straight from the uploaded file — nothing is stored in the DB.
@@ -402,7 +412,10 @@ export default function DateSheets() {
         form.append('year', String(Number(year)));
         form.append('mergeGroups', JSON.stringify(groups || []));
         form.append('excludeDates', JSON.stringify(excludedDates));
-        form.append('excludeCourses', JSON.stringify(removedCodes || []));
+        form.append('excludeCourses', JSON.stringify(fullyRemoved));
+        form.append('courseScope', JSON.stringify(scopeMap));
+        form.append('includeFloaters', includeFloaters && excludedBatches.length ? 'true' : 'false');
+        if (instructions.trim()) form.append('instructions', instructions.trim());
         form.append('includeCourses', JSON.stringify(Object.keys(autoNoExam).filter((c) => !(removedCodes || []).includes(c))));
         form.append('firstSlotDepartments', JSON.stringify(firstSlotDepts || []));
         form.append('maxPapersPerDay', twoPerDay ? '2' : '1');
@@ -424,7 +437,10 @@ export default function DateSheets() {
           year: Number(year),
           mergeGroups: groups || [],
           excludeDates: excludedDates,
-          excludeCourses: removedCodes || [],
+          excludeCourses: fullyRemoved,
+          courseScope: scopeMap,
+          includeFloaters: includeFloaters && excludedBatches.length ? true : undefined,
+          instructions: instructions.trim() || undefined,
           // auto no-paper courses the admin un-ticked = they DO get a paper
           includeCourses: Object.keys(autoNoExam).filter((c) => !(removedCodes || []).includes(c)),
           firstSlotDepartments: firstSlotDepts || [],
@@ -439,6 +455,13 @@ export default function DateSheets() {
       if (res.data.multi) {
         setResult(null);
         const moved = res.data.btechClashMoves || 0;
+        const ro = res.data.roster;
+        if (res.data.special && ro) {
+          toast.success(`Special datesheet: ${ro.newStudents} student(s) of ${(ro.intakes || []).join(', ') || 'the selected intake'}`
+            + (ro.floaters ? ` + ${ro.floaters} floater(s) (${ro.floaterPapers} papers)` : '')
+            + (ro.skippedExamined ? ` · ${ro.skippedExamined} paper(s) already sat this term left out` : '')
+            + '. Issue its admit cards from Admit Cards → Special exam.', 12000);
+        }
         toast.success(`${(res.data.records || []).length} datesheet(s) generated.`
           + (moved ? ` ${moved} B.Tech paper(s) auto-shifted to avoid gen-ed clashes.` : '')
           + (res.data.removedStudents ? ` ${res.data.removedStudents} student(s) of ${excludedBatches.length} removed batch(es) left out.` : ''));
@@ -448,6 +471,11 @@ export default function DateSheets() {
         }
       } else {
         setResult(res.data.result);
+        const ro = res.data.roster;
+        if (res.data.special && ro) {
+          toast.success(`Special MS datesheet: ${ro.newStudents} student(s) of ${(ro.intakes || []).join(', ') || 'the selected intake'}`
+            + (ro.floaters ? ` + ${ro.floaters} floater(s)` : '') + '. Issue its admit cards from Admit Cards → Special exam.', 12000);
+        }
         toast.success('Datesheet generated.'
           + (res.data.removedStudents ? ` ${res.data.removedStudents} student(s) of ${excludedBatches.length} removed batch(es) left out.` : ''));
       }
@@ -768,6 +796,19 @@ export default function DateSheets() {
               </div>
             )}
 
+            {(
+              <label className="ds-batch-all" style={{ marginTop: 8, opacity: excludedBatches.length ? 1 : 0.55 }}
+                title={excludedBatches.length ? '' : 'Remove (un-select) some batches first — e.g. keep only the new intake'}>
+                <input type="checkbox" checked={includeFloaters && excludedBatches.length > 0} disabled={!excludedBatches.length}
+                  onChange={(e) => setIncludeFloaters(e.target.checked)} />
+                <span className="ds-batch-all-name">Include floaters?</span>
+                <span className="ds-batch-muted">
+                  older students of the removed batches who are registered in the same courses as the kept batch(es) also sit those papers
+                  (a paper they already sat in this exam &amp; term is left out). Makes a special datesheet — the regular one stays.
+                </span>
+              </label>
+            )}
+
             {batchOpen && (
               <div className="ds-batch-panel">
                 <div className="ds-batch-search">
@@ -797,6 +838,11 @@ export default function DateSheets() {
                             onChange={() => toggleIntake(g)} />
                           <span className="ds-batch-intake-name">{g.intake}</span>
                           <span className="ds-batch-muted">{g.batches.length} batch{g.batches.length > 1 ? 'es' : ''} · {g.students} students</span>
+                          <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 'auto', padding: '2px 8px', fontSize: 11.5 }}
+                            title="Keep ONLY this intake — every other batch is removed"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); const keep = new Set(g.batches.map((b) => b.batch)); setExcludedBatches(batchGroups.flatMap((x) => x.batches.map((b) => b.batch)).filter((b) => !keep.has(b))); }}>
+                            Only this intake
+                          </button>
                         </label>
                         {g.batches.map((b) => {
                           const sel = excludedBatches.includes(b.batch);
@@ -832,6 +878,16 @@ export default function DateSheets() {
               {twoPerDay
                 ? 'A student may sit up to 2 papers a day — one morning + one afternoon, with the middle slot left free as a gap.'
                 : 'Each student sits at most one paper per day (needs enough exam days).'}
+            </p>
+          </div>
+
+          {/* ── Instructions under the table (BS sheets only) ── */}
+          <div style={{ marginTop: 16, padding: 14, border: '1px solid var(--border)', borderRadius: 12, background: 'var(--surface-2,#f4f7f5)' }}>
+            <label className="ds-label" style={{ marginBottom: 6 }}><FileText size={15} /> Instructions <span style={{ fontWeight: 400, color: 'var(--text-faint)' }}>(optional)</span></label>
+            <textarea className="input" rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)}
+              placeholder="e.g. The midterm exams of the following courses will be held during the class time …" style={{ width: '100%', resize: 'vertical' }} />
+            <p style={{ fontSize: 12, color: 'var(--text-faint)', margin: '6px 0 0' }}>
+              Printed under the table on the BS datesheet (the sheet is laid out on two pages so it sits right below the table). Never on the B.Tech sheet.
             </p>
           </div>
 
@@ -1073,7 +1129,19 @@ export default function DateSheets() {
               {removedCodes.length > 0 && (
                 <div className="ds-remove-chips no-scrollbar">
                   {removedCodes.map((code) => (
-                    <button key={code} className="ds-remove-chip" onClick={() => toggleRemoved(code)}>{code} <X size={12} /></button>
+                    <span key={code} className="ds-remove-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      {code}
+                      {!autoNoExam[code] && (
+                        <select value={removeScope[code] || 'both'} onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRemoveScope((m) => ({ ...m, [code]: e.target.value }))}
+                          title="Remove this course for whom?" style={{ fontSize: 11.5, padding: '1px 4px', borderRadius: 6, border: '1px solid var(--border)' }}>
+                          <option value="both">for everyone</option>
+                          <option value="new">{includeFloaters && excludedBatches.length ? 'for the selected intake only' : 'for the latest intake only'}</option>
+                          <option value="old">{includeFloaters && excludedBatches.length ? 'for floaters (older students) only' : 'for older batches only'}</option>
+                        </select>
+                      )}
+                      <button type="button" onClick={() => toggleRemoved(code)} style={{ border: 0, background: 'transparent', cursor: 'pointer', padding: 0, display: 'inline-flex' }} title="Keep this course"><X size={12} /></button>
+                    </span>
                   ))}
                 </div>
               )}

@@ -15,12 +15,20 @@ function signToken(user) {
   );
 }
 
+// Two sign-in doors. /login (portal "campus") is for students and faculty;
+// /admin (portal "staff") is for the Exam Cell, Finance and Student Affairs.
+// A request without a portal (older clients) is not restricted.
+const PORTAL_ROLES = {
+  campus: ['student', 'faculty'],
+  staff: ['admin', 'finance', 'affairs'],
+};
+
 // Same response for "no such user" and "wrong password" so usernames can't be probed.
 const BAD_LOGIN = 'Incorrect username or password.';
 
 // POST /api/auth/login
 exports.login = async (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, portal } = req.body || {};
   if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
     return res.status(400).json({ error: 'Enter both username and password.' });
   }
@@ -62,6 +70,18 @@ exports.login = async (req, res) => {
     }
     await user.save();
     return res.status(401).json({ error: msg });
+  }
+
+  // Right password, wrong door → no session; point the user to the right page.
+  const allowed = PORTAL_ROLES[portal];
+  if (allowed && !allowed.includes(user.role)) {
+    await logActivity('auth.wrong-portal', `${user.username} (${user.role}) tried the ${portal} sign-in page`, 'warning');
+    return res.status(403).json({
+      error: portal === 'staff'
+        ? 'This page is for the Exam Cell and Finance Office. Students and faculty sign in at the main sign-in page.'
+        : 'Staff accounts sign in at /admin.',
+      code: 'WRONG_PORTAL',
+    });
   }
 
   // Signed in with a factory / default password (student123, faculty123,

@@ -23,8 +23,9 @@ api.interceptors.response.use(
     if (err.response?.status === 401 && !String(err.config?.url || '').includes('/auth/login')) {
       localStorage.removeItem('abasyn_token');
       localStorage.removeItem('abasyn_admin');
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
+      const p = window.location.pathname;
+      if (!(p.startsWith('/login') || p.startsWith('/admin'))) {
+        window.location.href = localStorage.getItem('abasyn_portal') === 'staff' ? '/admin' : '/login';
       }
     }
     return Promise.reject(err);

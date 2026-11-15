@@ -385,6 +385,8 @@ async function runDatesheetJob(base, dataJson, deptKeys, labelOverride, avoidSch
     same_day_groups: base.sameDayGroups,     // English-I/II/III etc. — one day, 3 slots
     ...(base.fsProvided ? { first_slot_departments: base.fsDepts } : {}),
     force_merges: base.forceMerges,
+    // "Instructions" under the table — BS sheets only, never on the B.Tech sheet
+    ...(!isBtech && base.footerNote ? { footer_note: base.footerNote } : {}),
     // BTech: a COLUMN layout like the main sheet, with 3 fixed time columns and a
     // per-day mask so each day only fills the columns it's allowed to (the rest
     // stay blank):
@@ -556,6 +558,128 @@ function applyBatchExclusion(exportPath, excludeBatches) {
   return { removedStudents: regs.length - kept.length, keptStudents: kept.length };
 }
 
+// ── FLOATERS & per-group course removal (special datesheets) ─────────────────
+// "Include floaters": the selected (kept) intake(s) sit their papers, and so do
+// OLDER students of any other batch who are registered in those same courses
+// ("floaters") — except a course they already sat in another datesheet of this
+// exam & term. A course can also be removed for only ONE group:
+//   courseScope[CODE] = 'new' → removed for the selected / latest intake only
+//                     = 'old' → removed for the older students (floaters) only
+// Without floaters, 'new' = the LATEST intake among the kept students and 'old' =
+// every other kept student.
+async function examinedPairs(examType, semester, year) {
+  const out = new Set();
+  const q = { kind: 'datesheet', examType };
+  const all = await GeneratedFile.find(q).select('meta').lean();
+  const fstore = require('../utils/fileStore');
+  for (const d of all) {
+    const m = d.meta || {};
+    // only the REGULAR exam counts as "already sat" — a special (imported /
+    // floaters) datesheet is the one being made again, never a reason to skip
+    if (m.imported || m.special) continue;
+    if (semester && m.semester && String(m.semester).toLowerCase() !== String(semester).toLowerCase()) continue;
+    if (year && m.year && String(m.year) !== String(year)) continue;
+    const sf = m.scheduleFile && path.basename(m.scheduleFile);
+    if (!sf) continue;
+    const p = path.join(OUTPUT_DIR, sf);
+    try { if (!fs.existsSync(p)) await fstore.ensureLocal(sf); } catch { /* skip */ }
+    if (!fs.existsSync(p)) continue;
+    try {
+      const sn = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      for (const c of sn.courses || []) {
+        const code = String(c.code || '').trim().toUpperCase();
+        for (const sid of c.students || []) out.add(`${String(sid).trim()}|${code}`);
+      }
+    } catch { /* unreadable */ }
+  }
+  return out;
+}
+
+function applyRoster(exportPath, { excludeBatches, includeFloaters, courseScope, examined }) {
+  const up = (x) => String(x || '').trim().toUpperCase();
+  const ex = new Set((excludeBatches || []).map(_batchKey).filter(Boolean));
+  const scope = {};
+  for (const [k, v] of Object.entries(courseScope || {})) if (v === 'new' || v === 'old') scope[up(k)] = v;
+  const raw = JSON.parse(fs.readFileSync(exportPath, 'utf-8'));
+  const regs = (raw.student_registrations || []).map((r) => ({ ...r, courses: [...new Set((r.courses || []).map(up).filter(Boolean))] }));
+  const kept = regs.filter((r) => !ex.has(_batchKey(_batchOf(r))));
+  const others = regs.filter((r) => ex.has(_batchKey(_batchOf(r))));
+  let newG; let oldG; let floaters = [];
+  let skippedExamined = 0;
+  if (includeFloaters) {
+    newG = kept;
+    const keptCodes = new Set(kept.flatMap((r) => r.courses));
+    for (const r of others) {
+      const sid = String(r.student_id || '').trim();
+      const cs = r.courses.filter((c) => {
+        if (!keptCodes.has(c)) return false;
+        if (examined && examined.has(`${sid}|${c}`)) { skippedExamined += 1; return false; }
+        return true;
+      });
+      if (cs.length) floaters.push({ ...r, courses: cs, _floater: true });
+    }
+    oldG = floaters;
+  } else {
+    const intakeOf = (r) => _intakeOf(_batchOf(r), r.program);
+    const latest = kept.reduce((m, r) => Math.max(m, _intakeSortKey(intakeOf(r))), -1);
+    newG = kept.filter((r) => _intakeSortKey(intakeOf(r)) === latest);
+    const nset = new Set(newG);
+    oldG = kept.filter((r) => !nset.has(r));
+  }
+  let removedNew = 0; let removedOld = 0;
+  const strip = (r, who) => {
+    const before = r.courses.length;
+    r.courses = r.courses.filter((c) => scope[c] !== who);
+    const n = before - r.courses.length;
+    if (who === 'new') removedNew += n; else removedOld += n;
+  };
+  newG.forEach((r) => strip(r, 'new'));
+  oldG.forEach((r) => strip(r, 'old'));
+  const out = [...(includeFloaters ? kept : [...newG, ...oldG]), ...floaters].filter((r) => r.courses.length);
+  const taken = new Set(out.flatMap((r) => r.courses));
+  const courses = (raw.courses || []).filter((c) => taken.has(up(c.code)));
+  const newSet = new Set(newG.map((r) => String(r.student_id)));
+  const intakes = [...new Set(newG.map((r) => _intakeOf(_batchOf(r), r.program)))]
+    .sort((a, b) => _intakeSortKey(b) - _intakeSortKey(a));
+  fs.writeFileSync(exportPath, JSON.stringify({ ...raw, courses, student_registrations: out.map(({ _floater, ...r }) => r) }));
+  return {
+    students: out.length,
+    newStudents: out.filter((r) => newSet.has(String(r.student_id))).length,
+    floaters: floaters.filter((r) => r.courses.length).length,
+    floaterPapers: floaters.reduce((n, r) => n + r.courses.length, 0),
+    skippedExamined, removedNew, removedOld,
+    intakes, removedStudents: regs.length - out.length,
+    regs: out, courseRows: raw.courses || [],
+  };
+}
+
+// The exact students × courses of a special datesheet, saved as a registration
+// report (same columns as the ERP report) → admit cards, the editor's clash check
+// and the special-exam panel read it like an imported datesheet's file.
+function writeRosterXlsx(regs, courseRows, outPath) {
+  const xlsx = require('xlsx');
+  const up = (x) => String(x || '').trim().toUpperCase();
+  const name = {}; const cr = {};
+  for (const c of courseRows || []) {
+    const k = up(c.code); if (!k) continue;
+    if (!name[k] || String(c.component || '').toLowerCase() === 'lecture') name[k] = String(c.name || k).replace(/,/g, ' ');
+    if (cr[k] == null && c.creditHours != null) cr[k] = c.creditHours;
+  }
+  const rows = regs.map((r, i) => {
+    const cs = r.courses || [];
+    return {
+      'S. No': i + 1, 'Student Name': r.name || '', 'Student ID': String(r.student_id || ''),
+      'Academic Program': r.program || '', 'Batch Intake': r.batch || '',
+      'Number of Courses': cs.length,
+      'Courses with Names': cs.map((c) => `${c} - ${name[c] || c} - ${Number(cr[c] != null ? cr[c] : 3).toFixed(1)}`).join(', '),
+      'Credit Hours': cs.reduce((n, c) => n + Number(cr[c] != null ? cr[c] : 3), 0),
+    };
+  });
+  const wb = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(wb, xlsx.utils.json_to_sheet(rows), 'Registrations');
+  xlsx.writeFile(wb, outPath);
+}
+
 /**
  * GET /api/generate/cohort-courses?level=UG|PG
  * Every course the STUDENTS of that level are registered in (UG = BS + B.Tech,
@@ -650,6 +774,59 @@ async function exportFromUpload(file) {
   return out;
 }
 
+// Turn the records of a floaters / per-group run into ONE special exam (like an
+// imported datesheet): its roster file, BS + B.Tech parts, never pruned by the
+// regular datesheets; a re-run for the same intake replaces the previous one.
+async function markSpecial(records, roster, { examType, includeFloaters, footerNote }) {
+  const stamp = Date.now();
+  const word = examType === 'mids' ? 'Mids' : 'Finals';
+  const dataName = `Datesheet_${word}_Special_${stamp}_registrations.xlsx`;
+  // keep in the roster only the papers that really got a slot (labs / no-exam /
+  // removed courses drop out) — a student left with none gets no admit card
+  const onSheet = new Set();
+  for (const rec of records) {
+    try {
+      const sn = JSON.parse(fs.readFileSync(path.join(OUTPUT_DIR, path.basename((rec.meta && rec.meta.scheduleFile) || '')), 'utf-8'));
+      for (const c of sn.courses || []) onSheet.add(String(c.code || '').trim().toUpperCase());
+    } catch { /* unreadable */ }
+  }
+  if (onSheet.size) {
+    roster.regs = roster.regs.map((r) => ({ ...r, courses: (r.courses || []).filter((c) => onSheet.has(String(c).toUpperCase())) })).filter((r) => r.courses.length);
+    roster.students = roster.regs.length;
+  }
+  writeRosterXlsx(roster.regs, roster.courseRows, path.join(OUTPUT_DIR, dataName));
+  const label = `${(roster.intakes || []).join(', ') || 'Special'}${includeFloaters ? ' + floaters' : ''}`;
+  const rosterKey = `${examType}|${(roster.intakes || []).join(',')}|${includeFloaters ? 'f' : 's'}`;
+  const ids = records.map((r) => r._id);
+  for (const rec of records) {
+    const m = rec.meta || {};
+    let students = 0;
+    try {
+      const sn = JSON.parse(fs.readFileSync(path.join(OUTPUT_DIR, path.basename(m.scheduleFile || '')), 'utf-8'));
+      students = new Set((sn.courses || []).flatMap((c) => c.students || []).map(String)).size;
+    } catch { /* unknown */ }
+    const part = m.btech ? 'btech' : (/post/i.test(m.programLevel || '') ? 'pg' : 'bs');
+    await GeneratedFile.updateOne({ _id: rec._id }, { $set: {
+      'meta.imported': true, 'meta.special': true, 'meta.generatedSpecial': true,
+      'meta.importGroup': String(stamp), 'meta.part': part, 'meta.partLabel': part === 'btech' ? 'B.Tech' : part === 'pg' ? 'MS' : 'BS',
+      'meta.label': label, 'meta.rosterKey': rosterKey, 'meta.datasetFile': dataName,
+      'meta.students': students, 'meta.groupStudents': roster.students,
+      'meta.floaters': roster.floaters, 'meta.footerNote': part === 'btech' ? '' : footerNote,
+    } });
+    rec.meta = { ...m, imported: true, special: true, generatedSpecial: true, importGroup: String(stamp), part, label, datasetFile: dataName, students, groupStudents: roster.students };
+  }
+  // the previous special run for the same intake (not yet used for admit cards) is replaced
+  const old = await GeneratedFile.find({ kind: 'datesheet', examType, archived: { $ne: true }, 'meta.generatedSpecial': true, 'meta.rosterKey': rosterKey, _id: { $nin: ids } }).lean();
+  for (const d of old) {
+    const used = await GeneratedFile.exists({ kind: 'admit_cards', archived: { $ne: true }, 'meta.importedDatesheetIds': d._id });
+    if (used) { await GeneratedFile.updateOne({ _id: d._id }, { $set: { archived: true, 'meta.replacedReason': 'regenerated' } }); continue; }
+    for (const f of (d.files || [])) cleanup(path.join(OUTPUT_DIR, path.basename(f.filename)));
+    if (d.meta && d.meta.scheduleFile) cleanup(path.join(OUTPUT_DIR, path.basename(d.meta.scheduleFile)));
+    await GeneratedFile.deleteOne({ _id: d._id });
+  }
+  try { await require('../utils/fileStore').pushAll(); } catch { /* best-effort */ }
+}
+
 exports.generateDatesheet = async (req, res) => {
   let exportPath;
   let configPath;
@@ -673,6 +850,13 @@ exports.generateDatesheet = async (req, res) => {
     let excludeBatches = _J((req.body || {}).excludeBatches, []);
     excludeBatches = Array.isArray(excludeBatches) ? excludeBatches.map((x) => String(x || '').trim()).filter(Boolean) : [];
     includeCourses = Array.isArray(includeCourses) ? includeCourses.map((x) => String(x).toUpperCase()).filter(Boolean) : [];
+    // Floaters / per-group course removal → a SPECIAL datesheet (see applyRoster)
+    const includeFloaters = String((req.body || {}).includeFloaters) === 'true' || (req.body || {}).includeFloaters === true;
+    let courseScope = _J((req.body || {}).courseScope, {});
+    if (!courseScope || typeof courseScope !== 'object' || Array.isArray(courseScope)) courseScope = {};
+    const hasScope = Object.values(courseScope).some((v) => v === 'new' || v === 'old');
+    // "Instructions" printed under the table of the BS sheet(s) (never on B.Tech)
+    const footerNote = String((req.body || {}).instructions || '').trim().slice(0, 3000);
 
     // excludeCourses may arrive as an array (JSON body) or a JSON string
     // (multipart upload). Normalise to an array of course codes.
@@ -734,7 +918,20 @@ exports.generateDatesheet = async (req, res) => {
     // ── BATCH FILTER: removed batches' students are dropped before anything else, so
     //    their courses only stay if a kept student still takes them. None selected → all count.
     let batchFilter = { removedStudents: 0, keptStudents: null };
-    if (excludeBatches.length) {
+    // floaters / per-group removal work for BS, B.Tech AND MS datesheets
+    const rosterMode = (includeFloaters && excludeBatches.length) || hasScope;
+    let roster = null;
+    if (rosterMode) {
+      // MS: only MS students take part (intake / floaters are worked out among them)
+      if (String(programLevel).toLowerCase().startsWith('post')) filterExportByCohort(exportPath, _isPGprog);
+      const examined = includeFloaters ? await examinedPairs(examType, semester, year) : null;
+      roster = applyRoster(exportPath, { excludeBatches, includeFloaters: includeFloaters && excludeBatches.length > 0, courseScope, examined });
+      batchFilter = { removedStudents: roster.removedStudents, keptStudents: roster.students };
+      if (!roster.students) {
+        cleanup(exportPath);
+        return res.status(400).json({ error: 'No student is left to schedule with these choices.' });
+      }
+    } else if (excludeBatches.length) {
       batchFilter = applyBatchExclusion(exportPath, excludeBatches);
       if (batchFilter.keptStudents === 0) {
         cleanup(exportPath);
@@ -784,6 +981,7 @@ exports.generateDatesheet = async (req, res) => {
         blockedWindows, sameDayGroups,
         maxPerDay: Math.min(2, Math.max(1, Number((req.body || {}).maxPapersPerDay) || 1)),
         excludeBatches,
+        footerNote,
       };
 
       // BS jobs: one sheet for all BS students, or split by the selected departments
@@ -865,14 +1063,22 @@ exports.generateDatesheet = async (req, res) => {
       if (!records.length) {
         return res.status(500).json({ error: errors[0] || 'No examinable courses to schedule.' });
       }
+      if (roster) {
+        try { await markSpecial(records, roster, { examType, includeFloaters, footerNote }); }
+        catch (e) { console.error('special datesheet:', e.message); errors.push(`special: ${e.message}`); }
+      }
       try {
         for (const coh of new Set(records.map(datesheetCohort))) {
+          if (coh === 'custom') continue;   // special datesheets never replace the regular ones
           await pruneOldDatesheets(records.filter((r) => datesheetCohort(r) === coh).map((r) => r._id), coh, examType);
         }
       } catch (e) { console.error('prune datesheets:', e.message); }
       await logActivity('generate.datesheet',
         `${records.length} datesheet(s) generated${excludeBatches.length ? ` (removed batches: ${excludeBatches.join(', ').slice(0, 600)})` : ''}${errors.length ? `; FAILED: ${errors.join(' | ').slice(0, 1500)}` : ''}`, errors.length ? 'warning' : 'success');
-      return res.json({ ok: true, records, multi: true, errors, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents });
+      return res.json({
+        ok: true, records, multi: true, errors, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents,
+        ...(roster ? { special: true, roster: { students: roster.students, newStudents: roster.newStudents, floaters: roster.floaters, floaterPapers: roster.floaterPapers, skippedExamined: roster.skippedExamined, removedNew: roster.removedNew, removedOld: roster.removedOld, intakes: roster.intakes } } : {}),
+      });
     }
 
     const stamp = Date.now();
@@ -905,6 +1111,7 @@ exports.generateDatesheet = async (req, res) => {
       same_day_groups: sameDayGroups,     // English-I/II/III etc. — one day, 3 slots
       ...(fsProvided ? { first_slot_departments: fsDepts } : {}),
       force_merges: String(forceMerges) === 'true' || forceMerges === true,
+      ...(footerNote ? { footer_note: footerNote } : {}),
       data_json: exportPath,
       out: pdfPath,
       ...MS_SLOT_POLICY,
@@ -967,16 +1174,26 @@ exports.generateDatesheet = async (req, res) => {
     });
 
     cleanup(exportPath); cleanup(configPath);
+    // floaters / per-group removal → a special MS datesheet (the regular MS one stays)
+    if (roster) {
+      try { await markSpecial([record], roster, { examType, includeFloaters, footerNote }); }
+      catch (e) { console.error('special datesheet:', e.message); }
+    }
     // MS keeps only its LATEST datesheet — replace the previous MS datesheet of this exam.
-    try { await pruneOldDatesheets([record._id], datesheetCohort(record), examType); }
-    catch (e) { console.error('prune datesheets:', e.message); }
+    if (!roster) {
+      try { await pruneOldDatesheets([record._id], datesheetCohort(record), examType); }
+      catch (e) { console.error('prune datesheets:', e.message); }
+    }
     await logActivity(
       'generate.datesheet',
       `${examType === 'mids' ? 'Mid-Term' : 'Final-Term'} datesheet generated (${result.total_courses} courses, ${result.total_days} days)`,
       'success'
     );
 
-    res.json({ ok: true, record, result, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents });
+    res.json({
+      ok: true, record, result, excludedBatches: excludeBatches, removedStudents: batchFilter.removedStudents,
+      ...(roster ? { special: true, roster: { students: roster.students, newStudents: roster.newStudents, floaters: roster.floaters, floaterPapers: roster.floaterPapers, skippedExamined: roster.skippedExamined, removedNew: roster.removedNew, removedOld: roster.removedOld, intakes: roster.intakes } } : {}),
+    });
   } catch (err) {
     cleanup(exportPath); cleanup(configPath);
     console.error('Datesheet generation error:', err);
@@ -1459,7 +1676,8 @@ exports.generateAdmitCards = async (req, res) => {
           // the fee (by reg no. manually, or in bulk via the fee-paid list upload).
           // Special exam (imported datesheet, e.g. Fall-2026 intake mids): the exam
           // office cleared these students' fee by hand → issued as verified.
-          feeStatus: allImported ? 'Paid (Verified Manually)' : 'Unpaid',
+          // (a special datesheet GENERATED here — floaters etc. — follows the normal fee gate)
+          feeStatus: allImported && !datesheets.some((d) => d.meta && d.meta.generatedSpecial) ? 'Paid (Verified Manually)' : 'Unpaid',
           heading: v.heading, examType: v.exam_type, semester: v.semester, year: v.year,
           exams: (s.exams || []).map((e) => ({
             code: e.code, name: e.name, teacher: e.teacher,
@@ -1475,6 +1693,13 @@ exports.generateAdmitCards = async (req, res) => {
     } catch (e) { console.error('verify store error:', e.message); }
     cleanup(verifyPath);
     result.verify_records = verifyCount;
+
+    // The room choice is saved ON the datesheets → the next run (admin or finance)
+    // opens with the same rooms: a list = "selective rooms", [] = "all rooms".
+    try {
+      await GeneratedFile.updateMany({ _id: { $in: datesheets.map((d) => d._id) } },
+        { $set: { 'meta.examRooms': examRooms, 'meta.roomMode': examRooms.length ? 'selective' : 'all' } });
+    } catch (e) { console.error('save exam rooms:', e.message); }
 
     cleanup(exportPath); cleanup(configPath);
     await logActivity(
@@ -2066,3 +2291,4 @@ exports.noExamFromFile = async (req, res) => {
     res.status(500).json({ error: err.message || 'Could not read the file.' });
   } finally { cleanup(p); cleanup(f.path); }
 };
+

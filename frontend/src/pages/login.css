@@ -146,11 +146,11 @@
   margin-bottom: 28px;
 }
 .login-card-logo {
-  height: 38px;
-  width: auto;
-  margin: 0 auto 18px;
-  display: block;
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 20px;
 }
+.login-brand .wm { align-items: flex-start; }
 .login-card-badge {
   width: 52px;
   height: 52px;

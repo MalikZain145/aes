@@ -13,7 +13,7 @@ export function AuthProvider({ children }) {
   // Validate stored token on load. We enforce a minimum display time for the
   // preloader so it plays smoothly instead of flashing for a split second.
   useEffect(() => {
-    const MIN_BOOT_MS = 3800; // preloader plays the logo-fill + wordmark assembly, then exits
+    const MIN_BOOT_MS = 3600; // preloader: ABASYN + Scheduler fill, tagline, then a smooth fade
     const startedAt = Date.now();
     const finish = () => {
       const elapsed = Date.now() - startedAt;
@@ -40,9 +40,11 @@ export function AuthProvider({ children }) {
       .finally(finish);
   }, []);
 
-  const login = useCallback(async (username, password) => {
+  const login = useCallback(async (username, password, portal = 'campus') => {
     try {
-      const res = await api.post('/auth/login', { username, password });
+      const res = await api.post('/auth/login', { username, password, portal });
+      // remember which door was used so sign-out / expiry returns to it
+      localStorage.setItem('abasyn_portal', portal === 'staff' ? 'staff' : 'campus');
       localStorage.setItem('abasyn_token', res.data.token);
       localStorage.setItem('abasyn_admin', JSON.stringify(res.data.admin));
       setAdmin(res.data.admin);

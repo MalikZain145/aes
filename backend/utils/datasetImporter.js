@@ -449,6 +449,24 @@ const SCHEMAS = {
     ],
     known: ['s no', 'sr no', 'serial no', 'number of courses', 'no of courses', 'credit hours', 'total credit hours'],
   },
+  // One row per student PER COURSE (many ERP / LMS exports look like this):
+  // Student ID + Course Code on every row. Rows are grouped per student and read
+  // exactly like the student-wise report.
+  studentcourse: {
+    label: 'Student-course list (one row per student per course)',
+    fields: [
+      { key: 'Student ID', required: true,
+        aliases: ['student id', 'studentid', 'student reg no', 'reg no', 'registration no', 'registration number', 'reg number', 'roll no', 'roll number', 'enrollment no', 'enrolment no', 'student no', 'student number', 'reg id'],
+        impact: 'Students cannot be read.' },
+      { key: 'Course Code', required: true, aliases: ['course code', 'subject code', 'code', 'course', 'course id', 'class code'], impact: 'No courses can be read.' },
+      { key: 'Course Title', aliases: ['course title', 'course name', 'subject name', 'subject', 'title', 'course description'], impact: 'Course names are taken from the course code.' },
+      { key: 'Student Name', aliases: ['student name', 'full name', 'student full name', 'name'], impact: 'Students are saved without names.' },
+      { key: 'Academic Program', aliases: ['academic program', 'academic programme', 'program', 'programme', 'degree', 'degree program', 'program name'], impact: "Each student's program is unknown." },
+      { key: 'Batch Intake', aliases: ['batch intake', 'batch', 'intake', 'session', 'admission batch', 'program batch'], impact: 'Batch is unknown.' },
+      { key: 'Credit Hours', aliases: ['credit hours', 'credit', 'credits', 'cr', 'credit hrs'], impact: 'Every course is taken as 3 credit hours.' },
+    ],
+    known: ['s no', 'sr no', 'section', 'semester', 'term', 'academic term'],
+  },
   classlist: {
     label: 'ERP class list (one row per class)',
     fields: [
@@ -512,6 +530,11 @@ function detectShapeMapped(headers) {
   const m = {};
   for (const [k, s] of Object.entries(SCHEMAS)) m[k] = mapColumns(s, headers).map;
   if (m.student['Courses with Names']) return 'student';
+  // Student ID + a course-code column on each row (and no class/teacher columns)
+  if (m.studentcourse['Student ID'] && m.studentcourse['Course Code'] && !m.classlist['Primary Faculty']) {
+    const cc = canonH(m.studentcourse['Course Code']);
+    if (cc !== 'code' || ch.includes('student id') || ch.some((h) => h.includes('reg'))) return 'studentcourse';
+  }
   if (m.classlist.Code && m.classlist['Primary Faculty'] && m.classlist['Program Batch'] && !m.timetable.Component) return 'classlist';
   const literalCourse = ch.some((h) => h.includes('course code') || h.includes('course title'));
   if (literalCourse && (m.coursewise['Meta Details'] || m.coursewise['Enrolled Students'])) return 'coursewise';
@@ -604,6 +627,12 @@ function checkRows(shape, rows) {
     if (badEntries) notes.push({ reason: `Course entries that could not be read as "CODE - Name - Credit" (e.g. ${badEx.map((x) => `"${x}"`).join(', ')})`, count: badEntries, rows: [] });
     const dup = [...seen.values()].filter((c) => c > 1).length;
     if (dup) notes.push({ reason: 'Students listed in more than one row (their courses were merged)', count: dup, rows: [] });
+  } else if (shape === 'studentcourse') {
+    for (const r of rows) {
+      if (!norm(r['Student ID'])) { addSkip(skipped, 'No Student ID', r); continue; }
+      if (!/^[A-Z]{2,6}-?\d{3,4}/.test(extractCode(r['Course Code']))) { addSkip(skipped, 'Course Code cannot be read', r); continue; }
+      used++;
+    }
   } else if (shape === 'classlist') {
     for (const r of rows) {
       const raw = norm(r.Code);
@@ -700,7 +729,8 @@ function parseDataset(xlsxPath) {
     if (!tried.length) throw new Error('The dataset is empty.');
     const err = new Error(
       'Unrecognised columns. Expected a "Courses with Names" column (student ' +
-      'registration export), Code/Name/Component columns (timetable format), ' +
+      'registration export), Student ID + Course Code on every row (student-course list), ' +
+      'Code/Name/Component columns (timetable format), ' +
       'Code/Primary Faculty/Program Batch (ERP class list), or ' +
       'Course Code / Course Title / Meta Details columns (course-wise enrolment report).'
     );
@@ -713,7 +743,22 @@ function parseDataset(xlsxPath) {
   const rows = canonicalRows(pick.rows, map);
 
   let result;
-  if (shape === 'student') result = parseStudentWise(rows);
+  if (shape === 'studentcourse') {
+    // group the per-course rows per student → the student-wise report's shape
+    const by = new Map();
+    for (const r of rows) {
+      const sid = norm(r['Student ID']); const code = extractCode(r['Course Code']);
+      if (!sid || !/^[A-Z]{2,6}-?\d{3,4}/.test(code)) continue;
+      if (!by.has(sid)) by.set(sid, { 'Student ID': sid, 'Student Name': '', 'Academic Program': '', 'Batch Intake': '', _c: new Map() });
+      const o = by.get(sid);
+      for (const k of ['Student Name', 'Academic Program', 'Batch Intake']) if (!o[k] && filled(r[k])) o[k] = norm(r[k]);
+      const cr = parseFloat(r['Credit Hours']);
+      const nm = norm(r['Course Title']).replace(/,/g, ' ') || code;
+      if (!o._c.has(code)) o._c.set(code, `${code} - ${nm} - ${Number.isNaN(cr) ? '3.0' : cr.toFixed(1)}`);
+    }
+    const grouped = [...by.values()].map(({ _c, ...o }) => ({ ...o, 'Courses with Names': [..._c.values()].join(', ') }));
+    result = parseStudentWise(grouped);
+  } else if (shape === 'student') result = parseStudentWise(rows);
   else if (shape === 'classlist') result = parseClassList(rows);
   else if (shape === 'timetable') result = parseTimetable(rows);
   else {

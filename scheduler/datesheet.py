@@ -3176,6 +3176,8 @@ def run(config: dict) -> dict:
         "semester": semester,
         "year": year,
         "excluded_codes": sorted(exclude_codes),
+        # optional "Instructions" text printed under the table (BS sheets)
+        "footer_note": str(config.get("footer_note") or "").strip(),
     }
     generate_pdf(schedule, dates, slots, meta, out_path)
 

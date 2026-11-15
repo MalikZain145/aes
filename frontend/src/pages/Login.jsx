@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { ShieldCheck, Zap, FileSpreadsheet, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import Wordmark from '../components/Wordmark';
 import { useToast } from '../context/ToastContext';
 import './login.css';
 
@@ -12,7 +13,29 @@ const FEATURES = [
   { icon: FileSpreadsheet, title: 'Timetables & datesheets', text: 'One engine produces weekly timetables and mid/final exam datesheets, ready as Excel and PDF.' },
 ];
 
-export default function Login() {
+// Two doors into the same app:
+//   /login → students & faculty   ("Sign in to your account")
+//   /admin → Exam Cell & Finance  ("Sign in to administrator account")
+// The server enforces the split too, so a role can only sign in at its own door.
+const PORTAL_TEXT = {
+  campus: {
+    title: 'Sign in to your account',
+    sub: 'For students and faculty of Abasyn University, Islamabad Campus.',
+    userLabel: 'Registration no. / Username',
+    userPh: 'e.g. AUIC-SG23-0000',
+    hint: 'Students sign in with their registration number. Forgot your password? Contact the Exam Cell.',
+  },
+  staff: {
+    title: 'Sign in to administrator account',
+    sub: 'For the Examination Cell and the Finance Office only.',
+    userLabel: 'Username',
+    userPh: 'Username',
+    hint: 'Restricted area. Every sign-in is recorded.',
+  },
+};
+
+export default function Login({ portal = 'campus' }) {
+  const T = PORTAL_TEXT[portal] || PORTAL_TEXT.campus;
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -28,7 +51,7 @@ export default function Login() {
       return;
     }
     setLoading(true);
-    const res = await login(username.trim(), password);
+    const res = await login(username.trim(), password, portal);
     setLoading(false);
     if (res.ok) {
       toast.success('Signed in. Welcome back.');
@@ -44,9 +67,9 @@ export default function Login() {
       <div className="login-aside">
         <div className="login-aside-content">
           <div className="login-brand">
-            <img src="/abasyn-white.png" alt="Abasyn" className="login-logo" />
+            <Wordmark tone="dark" size="sm" />
             <div className="login-brand-divider" />
-            <div className="login-brand-sub">Scheduler · Islamabad Campus</div>
+            <div className="login-brand-sub">Islamabad Campus</div>
           </div>
 
           <motion.h1
@@ -104,20 +127,20 @@ export default function Login() {
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         >
           <div className="login-card-head">
-            <img src="/abasyn-green.png" alt="Abasyn" className="login-card-logo" />
-            <h2 className="font-display">Administrator sign in</h2>
-            <p>Access is limited to the campus scheduling administrator.</p>
+            <div className="login-card-logo"><Wordmark tone="light" size="sm" tagline /></div>
+            <h2 className="font-display">{T.title}</h2>
+            <p>{T.sub}</p>
           </div>
 
           <form onSubmit={submit} className="login-form">
             <div className="field">
-              <label htmlFor="username">Username</label>
+              <label htmlFor="username">{T.userLabel}</label>
               <input
                 id="username"
                 className="input"
                 type="text"
                 autoComplete="username"
-                placeholder="admin"
+                placeholder={T.userPh}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoFocus
@@ -158,7 +181,7 @@ export default function Login() {
 
           <div className="login-hint">
             <ShieldCheck size={14} />
-            <span>Only one administrator account exists. There is no public sign-up.</span>
+            <span>{T.hint}</span>
           </div>
         </motion.div>
 

@@ -29,11 +29,15 @@ import Constraints from './pages/Constraints';
 import About from './pages/About';
 import StudentAffairs from './pages/StudentAffairs';
 
+// Sign-in page for the door this browser last used: /admin (Exam Cell, Finance)
+// or /login (students, faculty).
+export const loginPath = () => (localStorage.getItem('abasyn_portal') === 'staff' ? '/admin' : '/login');
+
 function Protected({ children }) {
   const { admin, booting } = useAuth();
   const location = useLocation();
   if (booting) return <BootScreen />;
-  if (!admin) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!admin) return <Navigate to={loginPath()} state={{ from: location }} replace />;
   return children;
 }
 
@@ -43,13 +47,13 @@ const HOME_BY_ROLE = { admin: '/dashboard', finance: '/admit-cards', faculty: '/
 // Restrict a route to specific roles; anyone else is bounced to their own home.
 function Guard({ roles, children }) {
   const { role } = useAuth();
-  if (roles && !roles.includes(role)) return <Navigate to={HOME_BY_ROLE[role] || '/login'} replace />;
+  if (roles && !roles.includes(role)) return <Navigate to={HOME_BY_ROLE[role] || loginPath()} replace />;
   return children;
 }
 
 function RoleHome() {
   const { role } = useAuth();
-  return <Navigate to={HOME_BY_ROLE[role] || '/login'} replace />;
+  return <Navigate to={HOME_BY_ROLE[role] || loginPath()} replace />;
 }
 
 function ComingSoon({ title }) {
@@ -84,7 +88,11 @@ export default function App() {
           <Routes location={location} key={location.pathname}>
             <Route
               path="/login"
-              element={admin ? <Navigate to="/" replace /> : <Login />}
+              element={admin ? <Navigate to="/" replace /> : <Login key="campus" portal="campus" />}
+            />
+            <Route
+              path="/admin"
+              element={admin ? <Navigate to="/" replace /> : <Login key="staff" portal="staff" />}
             />
             <Route
               path="/"

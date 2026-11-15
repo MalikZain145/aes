@@ -1,0 +1,53 @@
+/* ABASYN (green) over Scheduler (gold) — wordmark used in place of the logo */
+.wm { display: inline-flex; flex-direction: column; align-items: center; line-height: 1; user-select: none; }
+.wm-word { position: relative; display: inline-block; }
+.wm-layer { position: absolute; left: 0; top: 0; }
+.wm-abasyn {
+  font-family: var(--font-display, 'Fraunces', Georgia, serif);
+  font-weight: 700; letter-spacing: 0.14em; padding-left: 0.14em; /* keep optical centre */
+  font-size: 40px;
+}
+.wm-sched {
+  font-family: var(--font-display, 'Fraunces', Georgia, serif);
+  font-weight: 600; font-style: italic; letter-spacing: 0.02em;
+  font-size: 23px; margin-top: 4px;
+}
+.wm-ghost { color: transparent; -webkit-text-stroke: 1px currentColor; opacity: 0.35; }
+
+/* green → deeper green, bottom to top */
+.wm-abasyn .wm-solid {
+  background: linear-gradient(0deg, #22a372 0%, #4fe3b0 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+/* gold */
+.wm-sched .wm-solid {
+  background: linear-gradient(0deg, #b0821f 0%, #f0c661 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.wm-tagline {
+  margin-top: 14px; font-family: var(--font-body, 'Inter', system-ui, sans-serif);
+  font-size: 12px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
+}
+
+/* tones */
+.wm-dark { color: #eaf4ee; }
+.wm-dark .wm-tagline { color: #9fd8c2; }
+.wm-light { color: var(--ink-800, #0f3d2e); }
+.wm-light .wm-abasyn .wm-solid { background: linear-gradient(0deg, #0f3d2e 0%, #248a64 100%); -webkit-background-clip: text; background-clip: text; }
+.wm-light .wm-sched .wm-solid { background: linear-gradient(0deg, #9a7224 0%, #c8962f 100%); -webkit-background-clip: text; background-clip: text; }
+.wm-light .wm-tagline { color: var(--text-soft, #5c6b63); }
+
+/* sizes */
+.wm-sm .wm-abasyn { font-size: 28px; }
+.wm-sm .wm-sched { font-size: 16px; margin-top: 2px; }
+.wm-sm .wm-tagline { font-size: 10px; margin-top: 8px; }
+.wm-lg .wm-abasyn { font-size: 72px; }
+.wm-lg .wm-sched { font-size: 40px; margin-top: 6px; }
+.wm-lg .wm-tagline { font-size: 13px; margin-top: 22px; }
+@media (max-width: 560px) {
+  .wm-lg .wm-abasyn { font-size: 48px; }
+  .wm-lg .wm-sched { font-size: 27px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wm-layer { clip-path: none !important; }
+}
