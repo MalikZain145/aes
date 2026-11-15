@@ -8,7 +8,10 @@
   filter: blur(8px); pointer-events: none;
 }
 .wm-layer { position: absolute; left: 0; top: 0; }
-.wm-abasyn .wm-layer { left: 0.14em; } /* match the word's left padding so fill sits on the outline */
+.wm-abasyn .wm-layer { left: 0.14em; }
+/* room for italic overhang and descenders so the fill covers every glyph completely */
+.wm-word > span { display: inline-block; padding: 0.04em 0.06em 0.1em; }
+.wm-sched > span { padding-right: 0.22em; padding-left: 0.08em; } /* match the word's left padding so fill sits on the outline */
 .wm-abasyn {
   font-family: var(--font-display, 'Fraunces', Georgia, serif);
   font-weight: 700; letter-spacing: 0.14em; padding-left: 0.14em; /* keep optical centre */

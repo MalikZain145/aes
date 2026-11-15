@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { ShieldCheck, Zap, FileSpreadsheet, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import Wordmark from '../components/Wordmark';
+import { APP_VERSION } from '../version';
 import { useToast } from '../context/ToastContext';
 import './login.css';
 
@@ -23,7 +24,7 @@ const PORTAL_TEXT = {
     sub: 'For students and faculty of Abasyn University, Islamabad Campus.',
     userLabel: 'Registration No. / Email',
     userPh: '0000 / you@example.com',
-    hint: 'Students sign in with their registration number, faculty with their email.',
+    hint: 'Students: the last digits of your registration no. Faculty: your email.',
   },
   staff: {
     title: 'Sign in to administrator account',
@@ -185,7 +186,7 @@ export default function Login({ portal = 'campus' }) {
           </div>
         </motion.div>
 
-        <div className="login-version">Abasyn Scheduler · v1.0</div>
+        <div className="login-version">Abasyn Scheduler · {APP_VERSION}</div>
       </div>
     </div>
   );

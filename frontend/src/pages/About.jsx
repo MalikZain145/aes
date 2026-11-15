@@ -6,6 +6,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { PageHeader } from '../components/ui';
 import './about.css';
+import { APP_VERSION } from '../version';
 
 const FLOW = [
   { icon: Database, title: 'Your live data', desc: 'Courses, teachers, rooms and labs are stored in MongoDB and edited from this dashboard.' },
@@ -125,7 +126,7 @@ export default function About() {
             <div className="ab-foot-tag">Smart Scheduling, Better Education</div>
           </div>
         </div>
-        <div className="ab-foot-meta">Version 1.0 · Built for Abasyn University</div>
+        <div className="ab-foot-meta">Version {APP_VERSION} · Built for Abasyn University</div>
       </div>
     </div>
   );
