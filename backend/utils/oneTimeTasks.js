@@ -1214,11 +1214,14 @@ async function resetPortalPasswords20261115() {
 // English paper needs ~354 benches); more classrooms are added only if benches fall short.
 // The engine opens only the rooms each session needs. Each step is skipped if already done.
 // File: backend/data/imports/2026-11-23/registrations.xlsx (office PC only).
+// J-block only — the I block (I-112/201/215/216) is kept EMPTY this mids. The J-block's
+// 623 exam benches comfortably hold the busiest session (~400 students, anti-cheating
+// spacing already in these exam capacities), so no I-block or other rooms are needed.
 const FALL26_ROOMS_1123 = [
   'Auditorium (J-205)', 'Main Hall-B(J-Block)', 'J-214', 'J-314', 'J-312', 'J-210', 'J-313',
-  'J-209', 'J-315', 'J-301', 'J-310', 'J-211', 'J-311', 'I-215', 'I-216', 'I-112', 'I-201',
+  'J-209', 'J-315', 'J-301', 'J-310', 'J-211', 'J-311',
 ];
-const FALL26_BENCHES_NEEDED_1123 = 360;   // Thursday: 354 students of one merged paper (+ margin)
+const FALL26_BENCHES_NEEDED_1123 = 420;   // ≥ the busiest session (~400) with a margin
 const FALL26_MERGES_1123 = [
   ['SS104', 'SS113', 'ENG101', 'HM1033'], ['CET122', 'CT343'], ['MT112', 'MT101'], ['CS106', 'CS114'],
   ['CS100', 'CS122', 'CS1013'], ['MT129', 'MT123', 'MT1013'], ['SU102', 'VS102', 'RT102'], ['LT103', 'SU103', 'VS101', 'RT103'],
@@ -1278,7 +1281,8 @@ async function fall26MidsNewReg20261123() {
   const byName = new Map(all.map((r) => [String(r.name).trim().toLowerCase(), r]));
   const rooms = FALL26_ROOMS_1123.filter((n) => byName.has(n.toLowerCase())).map((n) => byName.get(n.toLowerCase()).name);
   let have = rooms.reduce((a, n) => a + benches(byName.get(n.toLowerCase())), 0);
-  const spare = all.filter((r) => !rooms.includes(r.name) && r.type !== 'lab' && !/^GP/i.test(r.name) && benches(r) >= 8)
+  // never fall back to the I block (kept empty this mids) or labs/GP rooms
+  const spare = all.filter((r) => !rooms.includes(r.name) && r.type !== 'lab' && !/^GP/i.test(r.name) && !/^I-/i.test(r.name) && benches(r) >= 8)
     .sort((a, z) => (/^J/i.test(z.name) - /^J/i.test(a.name)) || benches(z) - benches(a));
   for (const r of spare) { if (have >= FALL26_BENCHES_NEEDED_1123) break; rooms.push(r.name); have += benches(r); }
   out.push(`${rooms.length} exam rooms, ${have} benches`);
