@@ -3,6 +3,10 @@
  * Each job records its key in the Setting collection after it succeeds, so a
  * restart never repeats it. Runs automatically when the server starts.
  *
+ *   2026-11-23.fall26-mids-new-registrations  same Fall-26 mids datesheet (not re-made); its
+ *                                registration file → new report (464 students), more merged papers;
+ *                                special admit cards, seating, ID sheets, roster re-issued
+ *                                (J block + I-215/216/112/201).
  *   2026-11-15.reset-portal-passwords  every student login → student123, every faculty login
  *                                → faculty123 (must change at next sign-in; staff untouched).
  *   2026-10-12.clear-timetables  remove every generated class timetable (engine runs,
@@ -1195,6 +1199,115 @@ async function resetPortalPasswords20261115() {
   return out.join('; ');
 }
 
+// 23 Nov 2026: Fall-2026 mids admit cards re-issued from the NEW registration report
+// (Course_Registration_Report_7) — exam office request. The datesheet already in the
+// system is KEPT (same papers, dates, times and PDF; nothing re-imported or re-drawn).
+// Only (a) its saved registration file is replaced by the new one (464 students, same
+// rules: older batches not in SS108, SS118, SS216, MT129, PSY201/202/203 or B.Tech
+// courses; 0 clashes) and (b) more codes are marked as ONE merged paper, so their
+// students always sit on the same bench side (one behind another, never side by side):
+//   CS100/CS122/CS1013 (ICT) · MT129/MT123/MT1013 · SU102/VS102/RT102 · LT103/SU103/VS101/RT103
+//   (SS104/SS113/ENG101/HM1033, CET122/CT343, MT112/MT101, CS106/CS114 already were).
+// Then the earlier special admit-card batch is archived and new admit cards, seating
+// plan, identification sheets and invigilation roster are generated (fee: Paid (Verified
+// Manually), as before) in all J-block exam rooms + I-215, I-216, I-112, I-201 (Thursday's
+// English paper needs ~354 benches); more classrooms are added only if benches fall short.
+// The engine opens only the rooms each session needs. Each step is skipped if already done.
+// File: backend/data/imports/2026-11-23/registrations.xlsx (office PC only).
+const FALL26_ROOMS_1123 = [
+  'Auditorium (J-205)', 'Main Hall-B(J-Block)', 'J-214', 'J-314', 'J-312', 'J-210', 'J-313',
+  'J-209', 'J-315', 'J-301', 'J-310', 'J-211', 'J-311', 'I-215', 'I-216', 'I-112', 'I-201',
+];
+const FALL26_BENCHES_NEEDED_1123 = 360;   // Thursday: 354 students of one merged paper (+ margin)
+const FALL26_MERGES_1123 = [
+  ['SS104', 'SS113', 'ENG101', 'HM1033'], ['CET122', 'CT343'], ['MT112', 'MT101'], ['CS106', 'CS114'],
+  ['CS100', 'CS122', 'CS1013'], ['MT129', 'MT123', 'MT1013'], ['SU102', 'VS102', 'RT102'], ['LT103', 'SU103', 'VS101', 'RT103'],
+];
+
+async function fall26MidsNewReg20261123() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const Room = require('../models/Room');
+  const fstore = require('./fileStore');
+  const { parseDataset } = require('./datasetImporter');
+  const data = path.join(__dirname, '..', 'data', 'imports', '2026-11-23', 'registrations.xlsx');
+  if (!fs.existsSync(data)) throw new Error(`${data} not found — run this on the office PC`);
+  const out = [];
+  const up = (x) => String(x == null ? '' : x).trim().toUpperCase();
+
+  const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } });
+  if (!sheets.length) throw new Error('no current Fall-2026 mids datesheet in the system');
+
+  // rooms: preferred list, then more active classrooms (J block first, biggest first) until the benches suffice
+  const all = await Room.find({ active: { $ne: false } }).lean();
+  const benches = (r) => Number(r.examCapacity) || Math.floor(Number(r.capacity || 0) / 2);
+  const byName = new Map(all.map((r) => [String(r.name).trim().toLowerCase(), r]));
+  const rooms = FALL26_ROOMS_1123.filter((n) => byName.has(n.toLowerCase())).map((n) => byName.get(n.toLowerCase()).name);
+  let have = rooms.reduce((a, n) => a + benches(byName.get(n.toLowerCase())), 0);
+  const spare = all.filter((r) => !rooms.includes(r.name) && r.type !== 'lab' && !/^GP/i.test(r.name) && benches(r) >= 8)
+    .sort((a, z) => (/^J/i.test(z.name) - /^J/i.test(a.name)) || benches(z) - benches(a));
+  for (const r of spare) { if (have >= FALL26_BENCHES_NEEDED_1123) break; rooms.push(r.name); have += benches(r); }
+  out.push(`${rooms.length} exam rooms, ${have} benches`);
+  if (have < FALL26_BENCHES_NEEDED_1123) throw new Error(`only ${have} benches in all classrooms — need ${FALL26_BENCHES_NEEDED_1123}`);
+
+  // 1) same datesheet: new registration file + merged papers (no re-import, no re-draw)
+  if (!sheets.every((d) => d.meta && d.meta.regVersion === '2026-11-23')) {
+    const regs = parseDataset(data).studentRegistrations || [];
+    const byCode = new Map();
+    for (const r of regs) for (const c of (r.courses || [])) { const k = up(c); if (!byCode.has(k)) byCode.set(k, new Set()); byCode.get(k).add(String(r.studentId)); }
+    // every paper of every sheet must still have its date — new registrations only for papers on it
+    const dsName = `Datesheet_Mids_Imported_${sheets[0].meta.importGroup || Date.now()}_registrations_20261123.xlsx`;
+    if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    fs.copyFileSync(data, path.join(OUTPUT_DIR, dsName));
+    const studs = new Set();
+    for (const rec of sheets) {
+      const sf = rec.meta && rec.meta.scheduleFile; if (!sf) throw new Error(`${rec.title}: no schedule file`);
+      const sp = path.join(OUTPUT_DIR, path.basename(sf));
+      try { if (!fs.existsSync(sp)) await fstore.ensureLocal(path.basename(sf)); } catch { /* checked below */ }
+      if (!fs.existsSync(sp)) throw new Error(`${rec.title}: schedule file missing`);
+      const snap = JSON.parse(fs.readFileSync(sp, 'utf-8'));
+      const here = new Set((snap.courses || []).map((c) => up(c.code)));
+      for (const c of snap.courses || []) {
+        const k = up(c.code);
+        const m = FALL26_MERGES_1123.find((g) => g.includes(k));
+        if (m) c.group = m.filter((x) => here.has(x)).join('/');
+        if (byCode.has(k)) { c.students = [...byCode.get(k)]; c.students.forEach((x) => studs.add(x)); }
+      }
+      const stem = path.basename(rec.files[0].filename).replace(/\.[^.]+$/, '');
+      const newSf = `${stem}_schedule_r20261123.json`;
+      fs.writeFileSync(path.join(OUTPUT_DIR, newSf), JSON.stringify(snap));
+      rec.meta = { ...rec.meta, scheduleFile: newSf, datasetFile: dsName, regVersion: '2026-11-23', prevDatasetFile: rec.meta.datasetFile, prevScheduleFile: rec.meta.scheduleFile };
+      rec.markModified('meta');
+      await rec.save();
+    }
+    for (const rec of sheets) { rec.meta = { ...rec.meta, groupStudents: studs.size }; rec.markModified('meta'); await rec.save(); }
+    try { await fstore.pushAll(); } catch { /* best-effort */ }
+    out.push(`datesheet kept; registration file → new report (${regs.length} students); merged papers updated`);
+  } else out.push('registration file already updated');
+
+  // 2) admit cards: archive the earlier special batch, issue new ones (once)
+  const ids = sheets.map((d) => d._id);
+  const done = await GeneratedFile.findOne({ kind: 'admit_cards', 'meta.special': true, 'meta.regVersion': '2026-11-23', archived: { $ne: true } }).lean();
+  if (done) { out.push('admit cards already generated'); return out.join('; '); }
+  const old = await GeneratedFile.updateMany(
+    { kind: 'admit_cards', 'meta.special': true, 'meta.importedDatesheetIds': { $in: ids }, archived: { $ne: true } },
+    { $set: { archived: true, 'meta.replacedReason': 'admit cards re-issued from the new registration report (23 Nov 2026)' } },
+  );
+  out.push(`archived ${old.modifiedCount || 0} earlier special admit-card batch(es)`);
+  const gen = require('../controllers/generateController');
+  const reply = await new Promise((resolve, reject) => {
+    const res = { _s: 200, status(c) { this._s = c; return this; }, json(b) { resolve({ status: this._s, body: b }); return this; } };
+    gen.generateAdmitCards({ body: { datesheetIds: ids.map(String), examRooms: rooms, cohort: '' }, headers: {}, user: { role: 'admin' } }, res).catch(reject);
+  });
+  if (reply.status !== 200 || !reply.body || !reply.body.ok) throw new Error(`admit cards: ${(reply.body && reply.body.error) || reply.status}`);
+  const rid = reply.body.record && reply.body.record._id;
+  if (rid) await GeneratedFile.updateOne({ _id: rid }, { $set: { 'meta.regVersion': '2026-11-23' } });
+  const r = reply.body.result || {};
+  try { await fstore.pushAll(); } catch { /* best-effort */ }
+  const audit = r.audit ? (r.audit.clean ? 'audit clean' : `AUDIT: ${JSON.stringify(r.audit.hard_counts)}`) : 'audit n/a';
+  out.push(`admit cards: ${r.admit_cards} cards, ${r.sessions} sessions, unseated ${r.unseated_count || 0}, seats short ${r.seats_short || 0}, clashes ${r.clash_count || 0}, solo benches ${r.solo_benches}, ${audit}`);
+  return out.join('; ');
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1230,6 +1343,7 @@ const TASKS = [
   ['2026-11-11.fall26-mids-redraw', fall26MidsRedraw20261111],
   ['2026-11-11.fall26-rt-swap', fall26RtSwap20261111],
   ['2026-11-15.reset-portal-passwords', resetPortalPasswords20261115],
+  ['2026-11-23.fall26-mids-new-registrations', fall26MidsNewReg20261123],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 
