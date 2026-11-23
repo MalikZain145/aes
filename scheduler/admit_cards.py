@@ -813,7 +813,107 @@ def _separate_batches(layout):
     return out, left
 
 
-def seat_session(session_students, venues, small_first=False):
+def _hall_layout(students, halls):
+    """Fill exam HALLS (Auditorium / Main Hall) with ONE paper, every seat used.
+    students: that paper's students, sorted by (code, batch, reg no). Left seats take
+    the head of the list and right seats the tail, so a bench pairs DIFFERENT course
+    codes of the merged paper (e.g. HM1033 beside SS113). Same-batch bench-mates are
+    then swapped apart on the right side. halls: [(name, seats)].
+    Returns (layout rows [{room,row,col,seat,stu}], students left over)."""
+    cap = sum(n for _r, n in halls)
+    k = min(cap, len(students))
+    nl = (k + 1) // 2; nr = k - nl
+    ls = students[:nl]
+    rs = students[len(students) - nr:] if nr else []
+    rest = students[nl:len(students) - nr] if nr else students[nl:]
+    out = []; li = ri = 0
+    for rm, seats in halls:
+        for b in range(1, (seats + 1) // 2 + 1):
+            if li < len(ls) and (b - 1) * 2 < seats:
+                out.append({"room": rm, "row": b, "col": "L", "seat": str(b), "stu": ls[li]}); li += 1
+            if ri < len(rs) and (b - 1) * 2 + 1 < seats:
+                out.append({"room": rm, "row": b, "col": "R", "seat": f"{b}A", "stu": rs[ri]}); ri += 1
+    # leftovers (odd capacity) go back to the normal rooms
+    rest = rest + ls[li:] + rs[ri:]
+    # same-batch / same-code bench repair inside the halls (swap right-side students)
+    bench = defaultdict(dict)
+    for i, r in enumerate(out):
+        bench[(r["room"], r["row"])][r["col"]] = i
+
+    def clash(a, b):
+        return _batch_key(a) == _batch_key(b) or str(a.get("course")) == str(b.get("course"))
+    rights = [b["R"] for b in bench.values() if "R" in b]
+    for _round in range(3):
+        bad = [k_ for k_, b in bench.items() if "L" in b and "R" in b and clash(out[b["L"]]["stu"], out[b["R"]]["stu"])]
+        if not bad:
+            break
+        for k_ in bad:
+            i = bench[k_]["R"]; me = out[i]["stu"]; lm = out[bench[k_]["L"]]["stu"]
+            if not clash(lm, me):
+                continue
+            for j in rights:
+                if j == i:
+                    continue
+                o = out[j]["stu"]
+                jb = bench[(out[j]["room"], out[j]["row"])]
+                lo = out[jb["L"]]["stu"] if "L" in jb else None
+                if not clash(lm, o) and (lo is None or not clash(lo, me)):
+                    out[i]["stu"], out[j]["stu"] = o, me
+                    break
+    return out, rest
+
+
+def seat_session(session_students, venues, small_first=False, halls=None):
+    """Seat one session. When the normal bench rule leaves students without a seat
+    and exam HALLS are configured ({room name: seats}), the largest paper of the
+    session is given the halls (every seat, different course codes side by side) and
+    everything else is seated by the normal rule in the other rooms. Sessions that
+    already fit are seated exactly as before."""
+    seat_of, placed, stats = _seat_session_rooms(session_students, venues, small_first)
+    if not halls or not stats.get("overflow_benches"):
+        return seat_of, placed, stats
+    hmap = {str(k).strip().lower(): int(v) for k, v in dict(halls).items() if int(v or 0) > 0}
+    hv = [v for v in venues if v["name"].strip().lower() in hmap]
+    if not hv:
+        return seat_of, placed, stats
+    hall_list = [(v["name"], min(hmap[v["name"].strip().lower()], 2 * int(v.get("rows") or 0))) for v in hv]
+    hall_list.sort(key=lambda x: -x[1])
+    by_paper = defaultdict(list)
+    seen = set()
+    for st in session_students:
+        k = (st["sid"], st["course"])
+        if k in seen:
+            continue
+        seen.add(k)
+        by_paper[_paper_of(st)].append(st)
+    big = max(by_paper, key=lambda p: len(by_paper[p]))
+    plist = sorted(by_paper[big], key=lambda s: (str(s.get("course", "")), str(s.get("batch", "")), _sid_key(s["sid"])))
+    hall_rows, rest_big = _hall_layout(plist, hall_list)
+    in_hall = {(r["stu"]["sid"], r["stu"]["course"]) for r in hall_rows}
+    others = [st for st in session_students if (st["sid"], st["course"]) not in in_hall]
+    hall_names = {n for n, _ in hall_list}
+    seat2, placed2, stats2 = _seat_session_rooms(others, [v for v in venues if v["name"] not in hall_names], small_first)
+    if stats2.get("overflow_benches", 0) >= stats.get("overflow_benches", 0):
+        return seat_of, placed, stats                  # halls did not help — keep the bench rule result
+    for r in hall_rows:
+        stu = r["stu"]
+        seat2[stu["sid"]] = (r["room"], r["seat"])
+        placed2.append({"room": r["room"], "row": r["row"], "col": r["col"], "seat": r["seat"],
+                        "sid": stu["sid"], "key": (_dept_of_program(stu.get("program", "")), stu["course"])})
+    hb = defaultdict(set)
+    for r in hall_rows:
+        hb[(r["room"], r["row"])].add(r["col"])
+    stats2 = dict(stats2)
+    stats2["attending"] = len(session_students)
+    stats2["seated"] = len(placed2)
+    stats2["solo_benches"] = stats2.get("solo_benches", 0) + sum(1 for v in hb.values() if len(v) == 1)
+    stats2["rooms_used"] = len({p["room"] for p in placed2})
+    stats2["hall_paper"] = big
+    stats2["hall_seated"] = len(hall_rows)
+    return seat2, placed2, stats2
+
+
+def _seat_session_rooms(session_students, venues, small_first=False):
     """
     session_students : list of { sid, name, program, batch, course }
     venues           : list of { name, rows, seats, kind }
@@ -2419,7 +2519,8 @@ def run(config: dict) -> dict:
                 _venues = _free
             else:
                 turnover_relaxed.append(f"{_gdate0} {_gstart//60:02d}:{_gstart%60:02d}")
-        seat_map, placed, stats = seat_session(attendees, _venues, small_first=_small_first)
+        seat_map, placed, stats = seat_session(attendees, _venues, small_first=_small_first,
+                                                halls=config.get("exam_halls") or None)
         for p in placed:
             if p["room"] != "UNASSIGNED":
                 room_free_at[(_gdate0, p["room"])] = max(room_free_at.get((_gdate0, p["room"]), 0), _gend)

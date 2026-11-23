@@ -7,6 +7,8 @@
  *                                registration file → new report (464 students), more merged papers;
  *                                special admit cards, seating, ID sheets, roster re-issued
  *                                (J block + I-215/216/112/201).
+ *   2026-11-23.fall26-mids-halls  13 J-block rooms; Auditorium 80 + Main Hall-B 60 seat the
+ *                                largest paper when it cannot fit one-per-bench; cards re-issued.
  *   2026-11-15.reset-portal-passwords  every student login → student123, every faculty login
  *                                → faculty123 (must change at next sign-in; staff untouched).
  *   2026-10-12.clear-timetables  remove every generated class timetable (engine runs,
@@ -1367,6 +1369,50 @@ async function fall26MidsNewReg20261123() {
   return out.join('; ');
 }
 
+// 23 Nov (evening): the exam office keeps the 13 J-block rooms only. Thursday's English
+// merged paper (354) and Saturday's ICT paper (323) cannot sit one-per-bench in 311
+// benches, so the Auditorium (80) and Main Hall-B (60) take that ONE paper seat by seat
+// (different course codes side by side); every other room keeps the bench rule. Other days
+// are seated exactly as before. Re-issues the special admit cards once.
+const FALL26_HALLS_1123 = { 'Auditorium (J-205)': 80, 'Main Hall-B(J-Block)': 60 };
+async function fall26MidsHalls20261123() {
+  const GeneratedFile = require('../models/GeneratedFile');
+  const Room = require('../models/Room');
+  const fstore = require('./fileStore');
+  const out = [];
+  const sheets = await GeneratedFile.find({ kind: 'datesheet', 'meta.imported': true, 'meta.config.startDate': '2026-11-30', archived: { $ne: true } });
+  if (!sheets.length) throw new Error('no current Fall-2026 mids datesheet in the system');
+  if (!sheets.every((d) => d.meta && d.meta.regVersion === '2026-11-23')) throw new Error('new registration file not attached yet (task 2026-11-23.fall26-mids-new-registrations must run first)');
+  const ids = sheets.map((d) => d._id);
+  const done = await GeneratedFile.findOne({ kind: 'admit_cards', 'meta.special': true, 'meta.hallVersion': '2026-11-23', archived: { $ne: true } }).lean();
+  if (done) return 'hall admit cards already generated';
+  const all = await Room.find({ active: { $ne: false } }).lean();
+  const byName = new Map(all.map((r) => [String(r.name).trim().toLowerCase(), r.name]));
+  const rooms = FALL26_ROOMS_1123.filter((n) => byName.has(n.toLowerCase())).map((n) => byName.get(n.toLowerCase()));
+  const halls = {};
+  for (const [n, v] of Object.entries(FALL26_HALLS_1123)) if (byName.has(n.toLowerCase())) halls[byName.get(n.toLowerCase())] = v;
+  if (Object.keys(halls).length !== 2) throw new Error(`hall rooms not found: ${Object.keys(FALL26_HALLS_1123).join(', ')}`);
+  out.push(`${rooms.length} exam rooms; halls ${Object.entries(halls).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  const old = await GeneratedFile.updateMany(
+    { kind: 'admit_cards', 'meta.special': true, 'meta.importedDatesheetIds': { $in: ids }, archived: { $ne: true } },
+    { $set: { archived: true, 'meta.replacedReason': 'admit cards re-issued: 13 J-block rooms, Auditorium 80 + Main Hall-B 60 seat the largest paper (23 Nov 2026)' } },
+  );
+  out.push(`archived ${old.modifiedCount || 0} earlier special admit-card batch(es)`);
+  const gen = require('../controllers/generateController');
+  const reply = await new Promise((resolve, reject) => {
+    const res = { _s: 200, status(c) { this._s = c; return this; }, json(b) { resolve({ status: this._s, body: b }); return this; } };
+    gen.generateAdmitCards({ body: { datesheetIds: ids.map(String), examRooms: rooms, examHalls: halls, cohort: '' }, headers: {}, user: { role: 'admin' } }, res).catch(reject);
+  });
+  if (reply.status !== 200 || !reply.body || !reply.body.ok) throw new Error(`admit cards: ${(reply.body && reply.body.error) || reply.status}`);
+  const rid = reply.body.record && reply.body.record._id;
+  if (rid) await GeneratedFile.updateOne({ _id: rid }, { $set: { 'meta.regVersion': '2026-11-23', 'meta.hallVersion': '2026-11-23' } });
+  const r = reply.body.result || {};
+  try { await fstore.pushAll(); } catch { /* best-effort */ }
+  const audit = r.audit ? (r.audit.clean ? 'audit clean' : `AUDIT: ${JSON.stringify(r.audit.hard_counts)}`) : 'audit n/a';
+  out.push(`admit cards: ${r.admit_cards} cards, ${r.sessions} sessions, unseated ${r.unseated_count || 0}, seats short ${r.seats_short || 0}, clashes ${r.clash_count || 0}, solo benches ${r.solo_benches}, ${audit}`);
+  return out.join('; ');
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1403,6 +1449,7 @@ const TASKS = [
   ['2026-11-11.fall26-rt-swap', fall26RtSwap20261111],
   ['2026-11-15.reset-portal-passwords', resetPortalPasswords20261115],
   ['2026-11-23.fall26-mids-new-registrations', fall26MidsNewReg20261123],
+  ['2026-11-23.fall26-mids-halls', fall26MidsHalls20261123],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 

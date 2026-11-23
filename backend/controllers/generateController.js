@@ -1385,6 +1385,14 @@ exports.generateAdmitCards = async (req, res) => {
       if (!hit) { cleanup(exportPath); return res.status(400).json({ error: 'None of the chosen exam rooms exists under Rooms & Labs.' }); }
       fs.writeFileSync(exportPath, JSON.stringify(raw));
     }
+    // Exam HALLS { room name: seats } — when a session's largest (merged) paper cannot fit
+    // one-per-bench, that paper alone fills these halls seat by seat (different course codes
+    // side by side); every other room keeps the bench rule. Sessions that fit are unchanged.
+    let examHalls = (req.body || {}).examHalls;
+    if (typeof examHalls === 'string') { try { examHalls = JSON.parse(examHalls); } catch { examHalls = null; } }
+    examHalls = (examHalls && typeof examHalls === 'object' && !Array.isArray(examHalls))
+      ? Object.fromEntries(Object.entries(examHalls).map(([k, v]) => [String(k).trim(), Math.floor(Number(v) || 0)]).filter(([k, v]) => k && v > 0))
+      : {};
 
     const examType = datesheet.examType || dsConfig.examType || 'finals';
     const stamp = Date.now();
@@ -1591,6 +1599,7 @@ exports.generateAdmitCards = async (req, res) => {
     // …and each student sits with the section of his program batch (ERP class list)
     try { config.student_sections = await require('../utils/sectionPlan').studentSectionMap(); } catch (e) { console.warn('student sections:', e.message); }
 
+    if (Object.keys(examHalls).length) config.exam_halls = examHalls;
     configPath = path.join(OUTPUT_DIR, `acconfig_${stamp}.json`);
     fs.writeFileSync(configPath, JSON.stringify(config));
 
@@ -1642,6 +1651,7 @@ exports.generateAdmitCards = async (req, res) => {
         cohort: thisCohort,   // bs | btech | pg — drives the BS/B.Tech/MS toggles
         ...(allImported ? { special: true, importedDatesheetIds: datesheets.map((d) => d._id), label: datesheet.meta && datesheet.meta.label } : {}),
         ...(examRooms.length ? { examRooms } : {}),
+        ...(Object.keys(examHalls).length ? { examHalls } : {}),
         invigilatorsBySession: result.invigilators_by_session || {},   // for cross-cohort invig de-clash
         invigilatorDayLoad: result.invigilator_day_load || {},         // for cross-cohort ≤2/day cap
         clashCount: result.clash_count || 0,
