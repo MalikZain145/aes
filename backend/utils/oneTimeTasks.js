@@ -7,6 +7,8 @@
  *                                registration file → new report (464 students), more merged papers;
  *                                special admit cards, seating, ID sheets, roster re-issued
  *                                (J block + I-215/216/112/201).
+ *   2026-11-23.exam-halls        Auditorium (80) + Main Hall-B (60) marked as exam halls (room
+ *                                setting only; nothing re-generated).
  *   2026-11-23.fall26-mids-halls  13 J-block rooms; Auditorium 80 + Main Hall-B 60 seat the
  *                                largest paper when it cannot fit one-per-bench; cards re-issued.
  *   2026-11-15.reset-portal-passwords  every student login → student123, every faculty login
@@ -1413,6 +1415,23 @@ async function fall26MidsHalls20261123() {
   return out.join('; ');
 }
 
+// 23 Nov (night): the Exam Cell's rule, made a room setting so every future exam
+// follows it on its own: the Auditorium may seat 80 and Main Hall-B 60 students of
+// ONE paper when the chosen rooms cannot hold a big merged paper one-per-bench.
+// Only these two rooms; nothing is generated or re-seated here.
+async function examHalls20261123() {
+  const Room = require('../models/Room');
+  const out = [];
+  for (const [name, seats] of Object.entries(FALL26_HALLS_1123)) {
+    const r = await Room.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    if (!r) { out.push(`${name}: not found`); continue; }
+    if (r.examHall) { out.push(`${r.name}: already an exam hall (${r.hallSeats || '—'})`); continue; }
+    await Room.updateOne({ _id: r._id }, { $set: { examHall: true, hallSeats: seats } });
+    out.push(`${r.name}: exam hall, ${seats} seats for one paper`);
+  }
+  return out.join('; ');
+}
+
 const TASKS = [
   ['2026-10-12.clear-timetables', clearTimetables],
   ['2026-10-12.staff-usernames', staffUsernames],
@@ -1450,6 +1469,7 @@ const TASKS = [
   ['2026-11-15.reset-portal-passwords', resetPortalPasswords20261115],
   ['2026-11-23.fall26-mids-new-registrations', fall26MidsNewReg20261123],
   ['2026-11-23.fall26-mids-halls', fall26MidsHalls20261123],
+  ['2026-11-23.exam-halls', examHalls20261123],
   // ['2026-10-21.add-11652-eman', addEman11652_20261021],   // ON HOLD (exam office, 21 Oct) — enable when told
 ];
 

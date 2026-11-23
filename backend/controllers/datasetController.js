@@ -45,31 +45,47 @@ exports.uploadDataset = async (req, res) => {
       await Promise.all([Course.deleteMany({}), StudentRegistration.deleteMany({})]);
     }
 
-    // Teachers
+    const progress = (msg) => { try { if (req.job) req.job.progress(msg); } catch { /* optional */ } };
+    progress('Saving teachers and courses…');
+
+    // Teachers — one read + one bulk write (was one round-trip per teacher)
     let tCreated = 0;
     // once the Faculty List is loaded it is the only source of teachers
     const rosterLoaded = await Teacher.exists({ inFacultyList: true });
-    for (const t of rosterLoaded ? [] : teachers) {
-      const exists = await Teacher.findOne({ name: t.name });
-      if (!exists) {
-        await Teacher.create({ name: t.name, email: t.email || '', facultyId: t.facultyId || '' });
-        tCreated++;
-      } else {
-        let changed = false;
-        if (!exists.email && t.email) { exists.email = t.email; changed = true; }
-        if (!exists.facultyId && t.facultyId) { exists.facultyId = t.facultyId; changed = true; }
-        if (changed) await exists.save();
+    const tList = rosterLoaded ? [] : teachers.filter((t) => t && t.name);
+    if (tList.length) {
+      const have = new Map((await Teacher.find({ name: { $in: tList.map((t) => t.name) } }).lean()).map((t) => [t.name, t]));
+      const toAdd = []; const toFix = []; const added = new Set();
+      for (const t of tList) {
+        const ex = have.get(t.name);
+        if (!ex) {
+          if (added.has(t.name)) continue;
+          added.add(t.name);
+          toAdd.push({ name: t.name, email: t.email || '', facultyId: t.facultyId || '' });
+        } else {
+          const set = {};
+          if (!ex.email && t.email) set.email = t.email;
+          if (!ex.facultyId && t.facultyId) set.facultyId = t.facultyId;
+          if (Object.keys(set).length) { toFix.push({ updateOne: { filter: { _id: ex._id }, update: { $set: set } } }); Object.assign(ex, set); }
+        }
       }
+      if (toAdd.length) {
+        try { tCreated = (await Teacher.insertMany(toAdd, { ordered: false })).length; }
+        catch (e) { tCreated = (e.insertedDocs || []).length; if (!(e.code === 11000 || (e.writeErrors || []).length)) throw e; }
+      }
+      if (toFix.length) await Teacher.bulkWrite(toFix, { ordered: false });
     }
 
-    // Courses
+    // Courses — existing ones are kept as they are; only new ones are inserted (bulk)
     let cCreated = 0;
     let cSkipped = 0;
     const autoSec = courses.filter((c) => c.autoSectioned).length;
+    const existing = new Set((await Course.find({ fullCode: { $in: courses.map((c) => c.fullCode) } }).select('fullCode').lean()).map((c) => c.fullCode));
+    const newDocs = []; const queued = new Set();
     for (const r of courses) {
-      const exists = await Course.findOne({ fullCode: r.fullCode });
-      if (exists) { cSkipped++; continue; }
-      await Course.create({
+      if (existing.has(r.fullCode) || queued.has(r.fullCode)) { cSkipped++; continue; }
+      queued.add(r.fullCode);
+      newDocs.push({
         fullCode: r.fullCode, code: r.code, name: r.name, component: r.component,
         section: r.section, programBatch: r.programBatch, program: r.program,
         academicTerm: r.academicTerm, teacher: r.teacher, enrolled: r.enrolled,
@@ -80,8 +96,15 @@ exports.uploadDataset = async (req, res) => {
         // ERP class list: the section's program batches + its ERP size (seating by section)
         ...(Array.isArray(r.programBatches) ? { programBatches: r.programBatches, erpEnrolled: Number(r.enrolled) || 0 } : {}),
       });
-      cCreated++;
     }
+    if (newDocs.length) {
+      try { cCreated = (await Course.insertMany(newDocs, { ordered: false })).length; }
+      catch (e) {
+        cCreated = (e.insertedDocs || []).length || (e.result && e.result.insertedCount) || 0;
+        if (!(e.code === 11000 || (e.writeErrors || []).length)) throw e;
+      }
+    }
+    progress('Saving student registrations…');
 
     // Student registrations (per-student name + program + courses) — this is what
     // lets the scheduler AND admit cards run straight from the database, with no
@@ -104,6 +127,7 @@ exports.uploadDataset = async (req, res) => {
       }
     }
 
+    progress('Creating portal logins and refreshing enrollment…');
     // New reg numbers → their Student Portal logins are created right away.
     let studentLogins = null;
     if (studentRegistrations.length) {

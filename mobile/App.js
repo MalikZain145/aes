@@ -6,6 +6,7 @@ import * as Updates from 'expo-updates';
 import { StatusBar } from 'expo-status-bar';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { API_BASE, VERIFY_PATH } from './config';
+import { verifyOffline, refreshPack, flushQueue, packInfo } from './offline';
 
 // ── Exam server ──────────────────────────────────────────────────────────────
 // The app talks ONLY to the server set in config.js (API_BASE). There is no IP
@@ -187,12 +188,30 @@ function ScannerApp() {
   const [online, setOnline] = useState(null);   // null = checking, true/false
   const lock = useRef(false);
 
+  const [offInfo, setOffInfo] = useState(null);   // { cards, fetchedAt, waiting }
+  const syncOffline = useCallback(async () => {
+    const ok = await refreshPack();
+    if (ok) setOnline(true);
+    await flushQueue();
+    try { setOffInfo(await packInfo()); } catch { /* ignore */ }
+    return ok;
+  }, []);
   const check = useCallback(async () => {
     setOnline(null);
-    setOnline(await pingServer());
-  }, []);
-  // check the server once when the app opens
-  useEffect(() => { check(); }, [check]);
+    const up = await pingServer();
+    setOnline(up);
+    if (up) syncOffline();
+  }, [syncOffline]);
+  // check the server once when the app opens; keep the offline data fresh and
+  // upload queued attendance in the background
+  useEffect(() => {
+    packInfo().then(setOffInfo).catch(() => {});
+    check();
+    const slow = setInterval(() => { syncOffline(); }, 5 * 60 * 1000);
+    const fast = setInterval(async () => { await flushQueue(); try { setOffInfo(await packInfo()); } catch { /* ignore */ } }, 30 * 1000);
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active') syncOffline(); });
+    return () => { clearInterval(slow); clearInterval(fast); sub.remove(); };
+  }, [check, syncOffline]);
 
   const startScan = useCallback(() => {
     lock.current = false;
@@ -206,9 +225,25 @@ function ScannerApp() {
     lastToken.current = token;
     setMode('loading');
 
+    // 1) OFFLINE FIRST: the card is checked on the phone from the offline data —
+    //    instant, no internet needed; attendance is queued and uploaded later.
+    try {
+      const off = await verifyOffline(token);
+      if (off) {
+        setResult({ type: 'valid', data: off });
+        setMode('result');
+        try { Vibration.vibrate(off.revoked ? [0, 160, 90, 160] : 60); } catch { /* no vibrator */ }
+        packInfo().then(setOffInfo).catch(() => {});
+        return;
+      }
+    } catch { /* fall back to the server */ }
+
+    // 2) not in the offline data (e.g. a card issued minutes ago) → ask the server
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 45000);   // a sleeping hosted server needs ~30-50 s to wake
+      const haveData = !!(offInfo && offInfo.cards);
+      // a sleeping hosted server needs ~30-50 s to wake; with offline data loaded don't wait that long
+      const timer = setTimeout(() => ctrl.abort(), haveData ? 15000 : 45000);
       let res = null;
       try {
         res = await fetch(`${SERVER}/api/verify/${encodeURIComponent(token)}`, { signal: ctrl.signal });
@@ -216,7 +251,9 @@ function ScannerApp() {
       clearTimeout(timer);
       setOnline(!!res);
       if (!res) {
-        setResult({ type: 'error', message: 'Cannot reach the exam server. Check the phone\'s internet connection and try again.' });
+        setResult({ type: 'error', message: offInfo && offInfo.cards
+          ? 'This card is not in the offline data and the exam server cannot be reached. Do not allow entry until it is verified — try again when the internet is back.'
+          : 'Cannot reach the exam server. Check the phone\'s internet connection and try again.' });
       } else if (res.status === 404) {
         setResult({ type: 'record_not_found' });     // our-format QR, not in DB → fake
       } else if (res.status === 429) {
@@ -232,7 +269,7 @@ function ScannerApp() {
       setResult({ type: 'error', message: 'Cannot reach the exam server. Check the phone\'s internet connection and try again.' });
     }
     setMode('result');
-  }, []);
+  }, [offInfo]);
 
   // Student ID card → Office of Student Affairs check on the same server.
   const verifyId = useCallback(async (qr) => {
@@ -310,6 +347,16 @@ function ScannerApp() {
           )}
         </View>
       )}
+      {mode !== 'loading' && offInfo && (
+        <View style={styles.offBar}>
+          <Text style={styles.offText} numberOfLines={1}>
+            {offInfo.cards
+              ? `Offline data: ${offInfo.cards} cards · updated ${ago(offInfo.fetchedAt)}`
+              : 'Offline data not downloaded yet — connect once to the internet'}
+            {offInfo.waiting ? ` · ${offInfo.waiting} attendance to upload` : ''}
+          </Text>
+        </View>
+      )}
 
       {mode === 'scan' && (
         <ScannerView permission={permission} requestPermission={requestPermission} onScan={onScan} />
@@ -326,6 +373,15 @@ function ScannerApp() {
 
     </View>
   );
+}
+
+function ago(ms) {
+  if (!ms) return 'never';
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 
 function ScannerView({ permission, requestPermission, onScan }) {
@@ -441,6 +497,15 @@ function ValidResult({ data }) {
         </View>
       </View>
 
+      {(data.attendanceMarked || data.offline) && (
+        <View style={[styles.feePill, { alignSelf: 'stretch', marginTop: -4, marginBottom: 12, backgroundColor: data.attendanceMarked ? '#d1e7dd' : '#e7eef9' }]}>
+          <Text style={{ color: data.attendanceMarked ? GREEN : '#1e3a8a', fontWeight: '800', fontSize: 12, textAlign: 'center' }}>
+            {data.attendanceMarked
+              ? `✓ Attendance marked${data.attendanceQueued ? ' (will upload automatically)' : ''}`
+              : 'Checked from offline data'}
+          </Text>
+        </View>
+      )}
       {data.status === 'today' && (
         <View>
           <Text style={styles.sectionLabel}>TODAY'S PAPER</Text>
@@ -531,6 +596,8 @@ const styles = StyleSheet.create({
   srvLabel: { flex: 1, color: '#daf0e4', fontSize: 13, fontWeight: '700' },
   srvBtn: { backgroundColor: '#198754', borderRadius: 8, paddingHorizontal: 16, paddingVertical: 9 },
   srvBtnT: { color: '#fff', fontWeight: '800', fontSize: 12 },
+  offBar: { paddingHorizontal: 14, paddingVertical: 6, backgroundColor: '#0b3d26' },
+  offText: { color: '#b9dcc8', fontSize: 11.5, fontWeight: '600' },
   header: { paddingTop: Platform.OS === 'ios' ? 58 : 40, paddingBottom: 14, paddingHorizontal: 18,
     backgroundColor: GREEN, alignItems: 'center' },
   hTitle: { color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: 0.5 },

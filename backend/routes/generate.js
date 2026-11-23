@@ -5,6 +5,9 @@ const ctrl = require('../controllers/generateController');
 const ed = require('../controllers/datesheetEditorController');
 const dsImport = require('../controllers/datesheetImportController');
 const requireAuth = require('../middleware/auth');
+const { asJob } = require('../utils/jobs');
+const admitJob = asJob(ctrl.generateAdmitCards, { label: 'admit cards' });
+const importJob = asJob(dsImport.importDatesheet, { label: 'datesheet import' });
 
 // Uploads for one-off datesheet generation go to a temp dir and are deleted
 // right after the PDF is produced — the datesheet file is never stored in the DB.
@@ -27,16 +30,18 @@ router.post('/datesheet', admin, ctrl.generateDatesheet);
 // Generate a datesheet straight from an uploaded .xls/.xlsx — no DB involved.
 router.post('/datesheet-from-file', admin, upload.single('dataset'), ctrl.generateDatesheetFromFile);
 // Generate per-student admit cards + seating plan from an uploaded registration file.
-router.post('/admit-cards', adminOrFinance, upload.single('dataset'), ctrl.generateAdmitCards);
+router.post('/admit-cards', adminOrFinance, upload.single('dataset'), admitJob);
 // Ready-made datesheet (special exam, e.g. a new intake): plan Excel + registration file → datesheet record
 router.post('/datesheet-import', admin, (req, res) => {
   upload.fields([{ name: 'plan', maxCount: 1 }, { name: 'dataset', maxCount: 1 }])(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
-    dsImport.importDatesheet(req, res);
+    importJob(req, res);
   });
 });
 // Live progress for the admit-card counter (polled during generation).
 router.get('/admit-cards/progress/:token', adminOrFinance, ctrl.getAdmitCardsProgress);
+// Seats/benches every sitting needs vs the chosen rooms (+ rooms that close a gap)
+router.post('/admit-cards/requirements', adminOrFinance, ctrl.admitCardRequirements);
 router.get('/admit-card/find', adminOrFinance, ctrl.findStudentCard);
 router.get('/admit-card/pdf', adminOrFinance, ctrl.studentCardPdf);
 router.get('/tags', adminOrFinance, ctrl.generateTags);

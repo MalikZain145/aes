@@ -59,7 +59,11 @@ app.use('/api/faculty', require('./routes/faculty'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/attendance', require('./routes/attendance'));
 app.use('/api/archive', require('./routes/archive'));
-app.use('/api/affairs', require('./routes/affairs'));   // Office of Student Affairs — digital ID cards (+ public /scan)
+app.use('/api/affairs', require('./routes/affairs'));
+// Background tasks (long imports / admit cards) — the client polls here
+app.get('/api/jobs/:id', require('./middleware/auth'), require('./utils/jobs').jobStatus);
+// Offline exam scanner: encrypted day pack + queued attendance sync
+app.use('/api/scanner', require('./routes/scanner'));   // Office of Student Affairs — digital ID cards (+ public /scan)
 
 // ── Public QR verification (no auth) ────────────────────────────────────────
 const _verify = require('./controllers/verifyController');

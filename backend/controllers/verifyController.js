@@ -316,3 +316,6 @@ exports.renderVerify = async (req, res) => {
   const foot = `<div class="foot">Verified on ${esc(new Date().toLocaleString('en-GB', { timeZone: require('../utils/examClock').TZ }))} · Abasyn University Examination System</div>`;
   return res.send(page(header + body + foot));
 };
+
+// shared with the offline scanner (controllers/scannerController.js)
+exports._internal = { resolveVerified, isRevoked, cardLabel, computeStatus, examEndOf, toMinutes };

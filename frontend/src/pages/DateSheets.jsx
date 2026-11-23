@@ -1486,20 +1486,53 @@ function ImportDatesheetCard({ onDone }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [clashes, setClashes] = useState([]);
+  const [clashCount, setClashCount] = useState(0);
+  // per-student fixes picked on the clash list — each changes ONLY that student
+  const [fixes, setFixes] = useState([]);
+  const [checking, setChecking] = useState(false);
+  const formOf = (fx, checkOnly) => {
+    const f = new FormData();
+    f.append('plan', plan); f.append('dataset', data);
+    f.append('label', label); f.append('examType', examType); f.append('semester', semester); f.append('year', year); f.append('note', note);
+    f.append('fixes', JSON.stringify(fx));
+    if (checkOnly) f.append('checkOnly', 'true');
+    return f;
+  };
+  // re-check with the fixes so far (nothing is saved)
+  const recheck = async (fx) => {
+    setChecking(true);
+    try {
+      await api.post('/generate/datesheet-import', formOf(fx, true), { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10 * 60 * 1000 });
+      setClashes([]); setClashCount(0);
+      toast.success('No clashes left — press Import to save the datesheet.');
+    } catch (err) {
+      setClashes(err?.response?.data?.clashes || []);
+      setClashCount(err?.response?.data?.clashCount || (err?.response?.data?.clashes || []).length);
+      if (err?.response?.status !== 409) toast.error(errMsg(err, 'Could not check the datesheet.'));
+    } finally { setChecking(false); }
+  };
+  const applyFix = (fix) => {
+    const k = (x) => `${x.type}|${x.sid}|${x.code || ''}`;
+    if (fixes.some((x) => k(x) === k(fix))) return;
+    const next = [...fixes, { type: fix.type, sid: fix.sid, code: fix.code }];
+    setFixes(next);
+    setClashes((cs) => cs.filter((c) => c.sid !== fix.sid));   // optimistic: this student's row goes
+    recheck(next);
+  };
+  const undoFix = (i) => { const next = fixes.filter((_, j) => j !== i); setFixes(next); recheck(next); };
   const submit = async () => {
     if (!plan || !data) { toast.error('Choose both files.'); return; }
     setBusy(true); setClashes([]);
     try {
-      const f = new FormData();
-      f.append('plan', plan); f.append('dataset', data);
-      f.append('label', label); f.append('examType', examType); f.append('semester', semester); f.append('year', year); f.append('note', note);
+      const f = formOf(fixes, false);
       const r = await api.post('/generate/datesheet-import', f, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 10 * 60 * 1000 });
       toast.success(`Datesheet imported — ${r.data.papers} papers, ${r.data.students} students, ${r.data.days} days${r.data.sheets > 1 ? ' (separate BS and B.Tech datesheets)' : ''}.`
         + (r.data.skippedNoStudents?.length ? ` No students for: ${r.data.skippedNoStudents.join(', ')}.` : '')
         + (r.data.coursesWithoutPaper?.length ? ` Registered but no paper: ${r.data.coursesWithoutPaper.join(', ')}.` : ''));
-      setOpen(false); setPlan(null); setData(null); onDone && onDone();
+      setOpen(false); setPlan(null); setData(null); setFixes([]); setClashes([]); onDone && onDone();
     } catch (err) {
       setClashes(err?.response?.data?.clashes || []);
+      setClashCount(err?.response?.data?.clashCount || (err?.response?.data?.clashes || []).length);
       toast.error(errMsg(err, 'Could not import the datesheet.'));
     } finally { setBusy(false); }
   };
@@ -1528,14 +1561,46 @@ function ImportDatesheetCard({ onDone }) {
             <textarea className="input" rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. The midterm exams of the following courses will be held during the class time …" />
           </label>
         </div>
-        {clashes.length > 0 && (
-          <div style={{ marginTop: 12, maxHeight: 160, overflow: 'auto', fontSize: 12, fontFamily: 'ui-monospace,monospace', background: '#fff5f5', padding: 8, borderRadius: 8 }}>
-            {clashes.map((c, i) => <div key={i}>{c.sid} {c.name} — {c.kind} {c.when}: {c.papers.join(' + ')}</div>)}
+        {(clashes.length > 0 || checking) && (
+          <div style={{ marginTop: 12, border: '1px solid #f1b5ae', background: '#fff8f7', borderRadius: 10, padding: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#b42318', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {checking && <Loader2 size={13} className="spin" />}
+              {clashCount || clashes.length} clash(es) — pick a fix for each. A fix changes only that student; the rest of the file stays as it is.
+            </div>
+            <div style={{ maxHeight: 300, overflow: 'auto' }}>
+              {clashes.map((c) => (
+                <div key={c.id || `${c.sid}${c.when}`} style={{ borderTop: '1px solid rgba(0,0,0,.06)', padding: '6px 0', fontSize: 12.5 }}>
+                  <div><b>{c.sid}</b> {c.name} <span style={{ color: 'var(--muted)' }}>· {c.batch}</span></div>
+                  <div style={{ color: '#7a271a' }}>{c.kind === 'same time' ? 'Two papers at the same time' : 'Two papers on the same day'} — {c.when}: <b>{c.papers.join('  +  ')}</b></div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                    {(c.fixes || []).map((fx, i) => (
+                      <button key={i} type="button" disabled={checking} title={fx.reason}
+                        className={`btn btn-sm ${fx.recommended ? 'btn-primary' : 'btn-ghost'}`} onClick={() => applyFix(fx)}>
+                        {fx.recommended ? '✓ ' : ''}{fx.label}{fx.type === 'drop' && fx.share != null ? ` (${fx.share}% same batch)` : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {fixes.length > 0 && (
+          <div style={{ marginTop: 10, fontSize: 12, background: '#f3faf6', border: '1px solid #b7dfc6', borderRadius: 10, padding: 8 }}>
+            <b>{fixes.length} fix(es) applied</b> (saved with this datesheet; admit cards follow them):
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+              {fixes.map((f, i) => (
+                <span key={i} style={{ border: '1px solid #b7dfc6', borderRadius: 999, padding: '2px 8px', background: '#fff' }}>
+                  {f.sid}: {f.type === 'drop' ? `no ${f.code}` : 'two papers on one day OK'}
+                  <button type="button" onClick={() => undoFix(i)} style={{ marginLeft: 6, border: 0, background: 'none', color: '#b42318', cursor: 'pointer' }} title="Undo">×</button>
+                </span>
+              ))}
+            </div>
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
           <button type="button" className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
-          <button type="button" className="btn btn-primary" disabled={busy || !plan || !data} onClick={submit}>{busy ? <><Loader2 size={14} className="spin" /> Importing…</> : <><Upload size={14} /> Import</>}</button>
+          <button type="button" className="btn btn-primary" disabled={busy || checking || !plan || !data || clashes.length > 0} onClick={submit}>{busy ? <><Loader2 size={14} className="spin" /> Importing…</> : <><Upload size={14} /> Import</>}</button>
         </div>
       </Modal>
     </>

@@ -63,6 +63,8 @@ async function exportDatabaseToJson() {
       capacity: r.capacity,
       examCapacity: r.examCapacity || null,
       examVenue: r.examVenue === true,
+      examHall: r.examHall === true,
+      hallSeats: r.examHall ? (r.hallSeats || null) : null,
     })),
     labs: labs.map((l) => ({
       name: l.name,

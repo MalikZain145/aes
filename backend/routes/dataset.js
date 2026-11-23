@@ -5,6 +5,8 @@ const path = require('path');
 const requireAuth = require('../middleware/auth');
 const { requireRole } = require('../middleware/auth');
 const ctrl = require('../controllers/datasetController');
+const { asJob } = require('../utils/jobs');
+const uploadJob = asJob(ctrl.uploadDataset, { label: 'dataset import' });
 
 // Store uploads in the OS temp dir; the controller deletes them after parsing
 const upload = multer({
@@ -23,7 +25,7 @@ router.use(requireRole('admin'));   // Exam Cell only
 router.post('/upload', (req, res) => {
   upload.single('dataset')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message });
-    ctrl.uploadDataset(req, res);
+    uploadJob(req, res);
   });
 });
 

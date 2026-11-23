@@ -15,7 +15,7 @@ const DEPARTMENTS = [
   'PHARM', 'MGMT', 'GENERAL',
 ];
 
-const EMPTY_ROOM = { name: '', capacity: 40, building: '', examCapacity: '' };
+const EMPTY_ROOM = { name: '', capacity: 40, building: '', examCapacity: '', examHall: false, hallSeats: '' };
 const EMPTY_LAB = { name: '', capacity: 30, departments: [], examCapacity: '' };
 
 export default function RoomsLabs() {
@@ -68,7 +68,7 @@ export default function RoomsLabs() {
   const openEdit = (item) => {
     setEditing(item);
     if (tab === 'rooms') {
-      setForm({ name: item.name, capacity: item.capacity, building: item.building || '', examCapacity: item.examCapacity || '' });
+      setForm({ name: item.name, capacity: item.capacity, building: item.building || '', examCapacity: item.examCapacity || '', examHall: !!item.examHall, hallSeats: item.hallSeats || '' });
     } else {
       setForm({ name: item.name, capacity: item.capacity, departments: item.departments || [], examCapacity: item.examCapacity || '' });
     }
@@ -79,6 +79,7 @@ export default function RoomsLabs() {
     e.preventDefault();
     if (!form.name.trim()) { toast.error('Name is required.'); return; }
     if (!form.capacity || form.capacity < 1) { toast.error('Capacity must be at least 1.'); return; }
+    if (tab === 'rooms' && form.examHall && !(Number(form.hallSeats) > 1)) { toast.error('Enter the hall seats for one paper (e.g. 80).'); return; }
     setSaving(true);
     const base = tab === 'rooms' ? '/rooms-labs/rooms' : '/rooms-labs/labs';
     const noun = tab === 'rooms' ? 'Room' : 'Lab';
@@ -209,6 +210,9 @@ export default function RoomsLabs() {
                         {item.examCapacity
                           ? <span className="cap-badge exam">{item.examCapacity}</span>
                           : <span className="faint">—</span>}
+                        {tab === 'rooms' && item.examHall && (
+                          <div className="faint" style={{ fontSize: 11, marginTop: 2 }} title="Exam hall: may seat one large paper on both seats of a bench when the chosen rooms are short">Hall · {item.hallSeats || '—'} for one paper</div>
+                        )}
                       </td>
                       {tab === 'labs' && (
                         <td>
@@ -266,6 +270,22 @@ export default function RoomsLabs() {
               <div className="field">
                 <label>Building <span className="faint">(optional)</span></label>
                 <input className="input" placeholder="I Block" value={form.building} onChange={(e) => setF('building', e.target.value)} />
+              </div>
+            ) : null}
+            {tab === 'rooms' ? (
+              <div className="field field-full">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!form.examHall} onChange={(e) => setF('examHall', e.target.checked)} />
+                  Exam hall (Auditorium / Main Hall)
+                </label>
+                <div className="faint" style={{ fontSize: 12, marginTop: 4 }}>
+                  Only when the chosen rooms are short, the largest paper may sit on both seats of some benches here — as few as needed. Every other bench keeps two different papers.
+                </div>
+                {form.examHall && (
+                  <input className="input" type="number" min="2" placeholder="Seats for one paper, e.g. 80" style={{ marginTop: 6, maxWidth: 260 }}
+                    value={form.hallSeats}
+                    onChange={(e) => setF('hallSeats', e.target.value === '' ? '' : (parseInt(e.target.value, 10) || 0))} />
+                )}
               </div>
             ) : null}
           </div>

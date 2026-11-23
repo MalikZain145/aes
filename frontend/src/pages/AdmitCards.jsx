@@ -200,8 +200,11 @@ export default function AdmitCards() {
     return `${exam} · ${sem} ${yr}${range}`.replace(/\s+/g, ' ').trim();
   };
 
+  const mainIds = useMemo(() => ['bs', 'btech', 'pg'].map((c) => latestByCohort[c]).filter(Boolean).map((d) => d._id), [latestByCohort]);
+  const { req: mainSeatReq, loading: mainSeatLoading } = useSeatRequirement(roomMode === 'selective' ? mainIds : [], roomMode, roomPicked);
   const validate = () => {
     if (!selectedDsIds.length) { toast.error('Tick at least one datesheet for these admit cards.'); return false; }
+    if (roomMode === 'selective' && mainSeatReq && mainSeatReq.ok === false && !mainSeatReq.unknown) { toast.error('The ticked rooms cannot seat every student — add the suggested rooms or use all rooms.'); return false; }
     if (roomMode === 'selective' && !roomPicked.length) { toast.error('Tick at least one exam room, or choose "Use all rooms".'); return false; }
     // Registration file is OPTIONAL — without it, cards build from the database.
     if (venueInfo && venueInfo.rooms === 0 && venueInfo.labs === 0) {
@@ -373,6 +376,7 @@ export default function AdmitCards() {
             </label>
 
             <RoomPicker rooms={roomList} mode={roomMode} setMode={setRoomMode} picked={roomPicked} setPicked={setRoomPicked} />
+            {roomMode === 'selective' && <SeatRequirement req={mainSeatReq} loading={mainSeatLoading} onAddRooms={(list) => setRoomPicked(list)} />}
 
             {!canGenerate && (
               <div className="ac-gate" style={{ margin: '10px 0', padding: '10px 12px', borderRadius: 10, background: 'var(--warn-bg, #fff4e5)', color: 'var(--warn-fg, #8a5a00)', fontSize: 13, border: '1px solid var(--border)' }}>
@@ -686,6 +690,77 @@ function savedRooms(list) {
   return null;
 }
 
+/* Seats each sitting needs vs the chosen rooms. Fetched live while rooms are ticked;
+   a short sitting blocks generation and offers the rooms that close the gap. */
+function useSeatRequirement(dsIds, mode, picked) {
+  const [req, setReq] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const key = JSON.stringify([dsIds, mode, mode === 'selective' ? [...picked].sort() : []]);
+  useEffect(() => {
+    if (!dsIds.length) { setReq(null); return undefined; }
+    let alive = true;
+    setLoading(true);
+    const t = setTimeout(() => {
+      api.post('/generate/admit-cards/requirements', { datesheetIds: dsIds, examRooms: mode === 'selective' ? picked : [] })
+        .then((r) => { if (alive) setReq(r.data); })
+        .catch(() => { if (alive) setReq(null); })
+        .finally(() => { if (alive) setLoading(false); });
+    }, 350);
+    return () => { alive = false; clearTimeout(t); };
+  }, [key]); // eslint-disable-line
+  return { req, loading };
+}
+
+const fmtDate = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
+};
+
+function SeatRequirement({ req, loading, onAddRooms }) {
+  if (!req && !loading) return null;
+  if (req?.unknown) return <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>{req.message}</div>;
+  const ok = req?.ok;
+  return (
+    <div style={{ marginTop: 10, border: `1px solid ${ok ? '#b7dfc6' : '#f1b5ae'}`, background: ok ? '#f3faf6' : '#fff5f4', borderRadius: 10, padding: '10px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: ok ? '#0f5132' : '#b42318' }}>
+        {loading ? <Loader2 size={14} className="spin" /> : null}
+        {req ? (ok
+          ? `Rooms are enough — ${req.rooms} room(s), ${req.benches} benches (${req.seats} seats).`
+          : `Rooms are NOT enough — ${req.short.length} sitting(s) short. Add rooms before generating.`) : 'Checking seats…'}
+      </div>
+      {req?.sittings?.length > 0 && (
+        <table style={{ width: '100%', fontSize: 12, marginTop: 8, borderCollapse: 'collapse' }}>
+          <thead><tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+            <th style={{ padding: '2px 4px' }}>Sitting</th><th>Students</th><th>Largest paper</th><th>Benches needed</th><th>Rooms give</th><th>Status</th>
+          </tr></thead>
+          <tbody>
+            {req.sittings.map((s) => (
+              <tr key={`${s.date}|${s.slot}`} style={{ borderTop: '1px solid rgba(0,0,0,.06)' }}>
+                <td style={{ padding: '3px 4px', whiteSpace: 'nowrap' }}>{fmtDate(s.date)} · {s.slot}</td>
+                <td>{s.students}</td>
+                <td title={s.largest?.codes?.join(' / ')}>{s.largest ? `${s.largest.codes.slice(0, 3).join('/')}${s.largest.codes.length > 3 ? '…' : ''} (${s.largest.n})` : '—'}</td>
+                <td>{s.benchesNeeded}</td>
+                <td>{s.benchesAvailable}</td>
+                <td style={{ color: s.ok ? '#0f5132' : '#b42318', fontWeight: 700 }}>
+                  {s.ok ? (s.doubleBenches ? `OK · ${s.doubleBenches} hall bench(es) one paper` : 'OK') : `Short by ${s.shortBenches} bench(es)`}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {req && !ok && (
+        <div style={{ marginTop: 8, fontSize: 12.5 }}>
+          {req.suggestion
+            ? <>Suggested: add <b>{req.suggestion.add.join(', ')}</b>{' '}
+              <button type="button" className="btn btn-primary btn-sm" style={{ marginLeft: 6 }} onClick={() => onAddRooms(req.suggestion.rooms)}>Add these rooms</button></>
+            : <>Even every room is not enough. Under <b>Rooms &amp; Labs</b>, mark the Auditorium / Main Hall as <b>Exam hall</b> with the seats they hold for one paper.</>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone }) {
   const toast = useToast();
   // one entry per import (BS + B.Tech sheets of the same import are issued together)
@@ -719,9 +794,12 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
     const want = sv.rooms.map((x) => String(x).toLowerCase());
     if (rooms.length) setPicked(rooms.filter((r) => want.includes(String(r.name).toLowerCase())).map((r) => r.name));
   }, [dsId, rooms.length]); // eslint-disable-line
+  const { req: seatReq, loading: seatLoading } = useSeatRequirement(ds?.ids || (dsId ? [dsId] : []), roomMode, picked);
+  const roomsShort = !!(seatReq && !seatReq.unknown && seatReq.ok === false);
   const generate = async () => {
     if (!dsId) return;
     if (roomMode === 'selective' && !picked.length) { toast.error('Tick at least one room, or choose "Use all rooms".'); return; }
+    if (roomsShort) { toast.error('The chosen rooms cannot seat every student. Add the suggested rooms first.'); return; }
     setBusy(true); setDone(0);
     const token = (window.crypto?.randomUUID?.() || `t${Date.now()}${Math.random()}`).replace(/[^a-zA-Z0-9-]/g, '');
     const poll = setInterval(async () => {
@@ -741,7 +819,11 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
       if (r.unseated_count) toast.error(`${r.unseated_count} paper-seat(s) could not be seated — the ticked rooms are too small.`);
       else toast.success(`${r.admit_cards} admit cards generated for ${ds?.meta?.label || 'the special exam'}.`);
       onDone(res);
-    } catch (err) { toast.error(errMsg(err, 'Admit-card generation failed.')); }
+    } catch (err) {
+      const sug = err?.response?.data?.suggestion;
+      if (err?.response?.data?.code === 'ROOMS_SHORT' && sug?.rooms?.length) { setRoomMode('selective'); setPicked(sug.rooms); }
+      toast.error(errMsg(err, 'Admit-card generation failed.'));
+    }
     finally { clearInterval(poll); setBusy(false); }
   };
   return (
@@ -756,12 +838,13 @@ function SpecialExamPanel({ datesheets: sheets, campusLine, includeLabs, onDone 
         {datesheets.map((d) => <option key={d._id} value={d._id}>{(d.meta?.heading || d.title).replace(/ — B\.Tech$/, '')}{d.parts.length ? ` · ${d.parts.join(' + ')} sheets` : ''}{d.meta?.students ? ` · ${d.meta.students} students` : ''}</option>)}
       </select>
       <RoomPicker rooms={rooms} mode={roomMode} setMode={setRoomMode} picked={picked} setPicked={setPicked} />
+      <SeatRequirement req={seatReq} loading={seatLoading} onAddRooms={(list) => { setRoomMode('selective'); setPicked(list); }} />
       <div style={{ marginTop: 12, fontSize: 12.5 }}>
         <b>Registration file</b> <span style={{ color: 'var(--muted)' }}>(optional — only if asked: the file used when this datesheet was imported)</span>
         <div style={{ marginTop: 4 }}><input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setRegFile(e.target.files?.[0] || null)} /></div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
-        <button type="button" className="btn btn-primary" disabled={busy || !dsId} onClick={generate}>
+        <button type="button" className="btn btn-primary" disabled={busy || !dsId || roomsShort} onClick={generate}>
           {busy ? <><Loader2 size={14} className="spin" /> Generating… {done ? `${done} cards` : ''}</> : <><Sparkles size={14} /> Generate admit cards</>}
         </button>
         {ds && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{ds.meta?.startDate} → {ds.meta?.endDate} · {ds.summary?.papers} papers</span>}

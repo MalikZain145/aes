@@ -153,7 +153,8 @@ def audit_seating(export, schedules, layout, verify, turnover_min=30, inv_cap=2,
             for row in room["rows"]:
                 seats.append({"date": sdate, "session_slot": sess["slot"], "time": row.get("time") or sess["slot"],
                               "room": room["name"], "row": int(row["row"]), "seat": row["seat"],
-                              "col": row.get("col"), "sid": str(row["sid"]), "course": norm_code(row["course"])})
+                              "col": row.get("col"), "sid": str(row["sid"]), "course": norm_code(row["course"]),
+                              "paper": row.get("paper") or ""})
     A.stats["seats"] = len(seats)
     # S2 double booking: same date+room+seat with overlapping times
     by_rs = defaultdict(list)
@@ -223,6 +224,10 @@ def audit_seating(export, schedules, layout, verify, turnover_min=30, inv_cap=2,
             A.h("S2_bench_over_two", {"bench": k, "n": len(lst)})
         if len(lst) == 2 and lst[0]["course"] == lst[1]["course"]:
             A.h("S4_bench_partners_same_paper", {"bench": k, "course": lst[0]["course"]})
+        elif (len(lst) == 2 and lst[0].get("paper") and lst[0].get("paper") == lst[1].get("paper")
+              and not (venues.get(k[2]) or {}).get("hall_seats")):
+            # two codes of ONE merged paper side by side — allowed only in an exam hall
+            A.h("S4_bench_partners_same_merged_paper", {"bench": k, "courses": [lst[0]["course"], lst[1]["course"]]})
     A.stats["solo_benches"] = solo
     for k, lst in bench.items():
         if len(lst) == 1:

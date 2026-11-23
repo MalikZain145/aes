@@ -1394,6 +1394,36 @@ exports.generateAdmitCards = async (req, res) => {
       ? Object.fromEntries(Object.entries(examHalls).map(([k, v]) => [String(k).trim(), Math.floor(Number(v) || 0)]).filter(([k, v]) => k && v > 0))
       : {};
 
+    // ROOMS MUST HOLD THE EXAM: a special exam is seated only in the rooms chosen
+    // for it, so check every sitting against them BEFORE anything is generated and
+    // tell the Exam Cell exactly which day is short and by how much (with rooms that
+    // would close the gap). A regular exam uses every room, so it is only warned.
+    let seatCheck = null;
+    try {
+      const Room = require('../models/Room');
+      const needs = require('../utils/seatingNeeds');
+      const allRooms = await Room.find({ active: { $ne: false } }).lean();
+      const want = new Set(examRooms.map((x) => x.toLowerCase()));
+      const hallOverride = new Map(Object.entries(examHalls).map(([k, v]) => [k.toLowerCase(), v]));
+      const roomsUsed = (examRooms.length ? allRooms.filter((r) => want.has(String(r.name).trim().toLowerCase())) : allRooms)
+        .map((r) => (hallOverride.has(String(r.name).trim().toLowerCase()) ? { ...r, examHall: true, hallSeats: hallOverride.get(String(r.name).trim().toLowerCase()) } : r));
+      const sittings = await needs.sittingsOf(datesheets, OUTPUT_DIR);
+      if (sittings.length) {
+        seatCheck = needs.checkRooms(sittings, roomsUsed);
+        const force = String((req.body || {}).allowShortRooms || '') === 'true';
+        if (!seatCheck.ok && (allImported || examRooms.length) && !force) {
+          const sug = needs.suggestRooms(sittings, roomsUsed, allRooms);
+          cleanup(exportPath);
+          const s0 = seatCheck.short[0];
+          return res.status(409).json({
+            error: `The chosen rooms are too small: ${seatCheck.short.length} sitting(s) short — e.g. ${s0.date} ${s0.slot} needs ${s0.benchesNeeded} benches, the rooms have ${s0.benchesAvailable}.`
+              + (sug.ok ? ` Add: ${sug.added.join(', ')}.` : ' Even all rooms are not enough — mark the Auditorium / Main Hall as exam halls under Rooms & Labs.'),
+            code: 'ROOMS_SHORT', requirements: seatCheck, suggestion: sug.ok ? { add: sug.added, rooms: sug.rooms } : null,
+          });
+        }
+      }
+    } catch (e) { console.warn('seat check:', e.message); }
+
     const examType = datesheet.examType || dsConfig.examType || 'finals';
     const stamp = Date.now();
     const label = examType === 'mids' ? 'Mids' : 'Finals';
@@ -1600,6 +1630,9 @@ exports.generateAdmitCards = async (req, res) => {
     try { config.student_sections = await require('../utils/sectionPlan').studentSectionMap(); } catch (e) { console.warn('student sections:', e.message); }
 
     if (Object.keys(examHalls).length) config.exam_halls = examHalls;
+    // per-student fixes chosen when a special datesheet was imported (clash list)
+    const drops = datesheets.flatMap((d) => ((d.meta && d.meta.importFixes) || []).filter((f) => f && f.type === 'drop' && f.sid && f.code).map((f) => [String(f.sid), String(f.code).toUpperCase()]));
+    if (drops.length) config.student_course_drops = drops;
     configPath = path.join(OUTPUT_DIR, `acconfig_${stamp}.json`);
     fs.writeFileSync(configPath, JSON.stringify(config));
 
@@ -1759,6 +1792,37 @@ async function locateStudentCard(reg) {
  * GET /api/generate/admit-card/find?reg=  → { found, reg, name, program, batch, papers, canPrint }
  * Look up a single student's admit card by registration number.
  */
+/**
+ * POST /api/generate/admit-cards/requirements  { datesheetIds, examRooms }
+ * Seats each sitting of these datesheets needs, what the chosen rooms (or all
+ * rooms, when none chosen) give, and — if short — rooms that close the gap.
+ */
+exports.admitCardRequirements = async (req, res) => {
+  try {
+    let { datesheetIds, examRooms } = req.body || {};
+    if (typeof datesheetIds === 'string') { try { datesheetIds = JSON.parse(datesheetIds); } catch { datesheetIds = []; } }
+    if (typeof examRooms === 'string') { try { examRooms = JSON.parse(examRooms); } catch { examRooms = []; } }
+    const ids = (Array.isArray(datesheetIds) ? datesheetIds : []).filter(Boolean);
+    const rooms = (Array.isArray(examRooms) ? examRooms : []).map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'Choose the datesheet first.' });
+    const datesheets = (await GeneratedFile.find({ _id: { $in: ids }, kind: 'datesheet' }).lean().catch(() => []));
+    if (!datesheets.length) return res.status(404).json({ error: 'Datesheet not found.' });
+    const Room = require('../models/Room');
+    const needs = require('../utils/seatingNeeds');
+    const allRooms = await Room.find({ active: { $ne: false } }).lean();
+    const want = new Set(rooms);
+    const picked = rooms.length ? allRooms.filter((r) => want.has(String(r.name).trim().toLowerCase())) : allRooms;
+    const sittings = await needs.sittingsOf(datesheets, OUTPUT_DIR);
+    if (!sittings.length) return res.json({ ok: true, unknown: true, sittings: [], message: 'The schedule of this datesheet was not found — the room check runs during generation.' });
+    const check = needs.checkRooms(sittings, picked);
+    const sug = check.ok ? null : needs.suggestRooms(sittings, picked, allRooms);
+    res.json({ ...check, suggestion: sug && sug.ok ? { add: sug.added, rooms: sug.rooms } : null, allRoomsOk: needs.checkRooms(sittings, allRooms).ok });
+  } catch (e) {
+    console.error('requirements:', e.message);
+    res.status(500).json({ error: e.message || 'Could not work out the seat requirement.' });
+  }
+};
+
 exports.findStudentCard = async (req, res) => {
   const reg = String(req.query.reg || '').trim();
   if (!reg) return res.status(400).json({ error: 'Enter a registration number.' });

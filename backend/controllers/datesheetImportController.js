@@ -98,6 +98,16 @@ async function importPlan({ planFile, dataFile, body = {} }) {
     let examRooms = b.examRooms;
     if (typeof examRooms === 'string') { try { examRooms = JSON.parse(examRooms); } catch { examRooms = examRooms.split(','); } }
     examRooms = Array.isArray(examRooms) ? examRooms.map((x) => String(x).trim()).filter(Boolean) : [];
+    // FIXES chosen on the clash list — each touches ONE student only:
+    //   { type: 'drop', sid, code }  → this student does not sit this paper here
+    //   { type: 'sameDay', sid }     → this student may sit two papers on one day
+    let fixes = b.fixes;
+    if (typeof fixes === 'string') { try { fixes = JSON.parse(fixes); } catch { fixes = []; } }
+    fixes = (Array.isArray(fixes) ? fixes : []).map((f) => ({ type: String(f && f.type || ''), sid: String(f && f.sid || '').trim(), code: up(f && f.code) }))
+      .filter((f) => f.sid && ((f.type === 'drop' && f.code) || f.type === 'sameDay')).slice(0, 2000);
+    const dropSet = new Set(fixes.filter((f) => f.type === 'drop').map((f) => `${f.sid}|${f.code}`));
+    const sameDayOk = new Set(fixes.filter((f) => f.type === 'sameDay').map((f) => f.sid));
+    const checkOnly = String(b.checkOnly || '') === 'true';
 
     const plan = readPlan(planFile.path);
     const bad = plan.rows.filter((r) => !r.date || !r.slot);
@@ -107,8 +117,11 @@ async function importPlan({ planFile, dataFile, body = {} }) {
     const regs = ds.studentRegistrations || [];
     if (!regs.length) fail(400, 'The registration file has no students (student-wise report expected).');
     const byCode = new Map();
+    let dropped = 0;
     for (const r of regs) for (const c of (r.courses || [])) {
-      const k = up(c); if (!byCode.has(k)) byCode.set(k, new Set()); byCode.get(k).add(String(r.studentId));
+      const k = up(c);
+      if (dropSet.has(`${String(r.studentId)}|${k}`)) { dropped++; continue; }
+      if (!byCode.has(k)) byCode.set(k, new Set()); byCode.get(k).add(String(r.studentId));
     }
     const nameFromData = {};
     for (const c of (ds.courses || [])) if (c.code && c.name && !nameFromData[up(c.code)]) nameFromData[up(c.code)] = c.name;
@@ -156,21 +169,58 @@ async function importPlan({ planFile, dataFile, body = {} }) {
     }
     const clashes = [];
     const nameOf = new Map(regs.map((r) => [String(r.studentId), r.name || '']));
+    const batchLabel = (r) => {
+      const pg = String(r.program || '').trim(); const bt = String(r.batch || '').trim();
+      return bt.toLowerCase().startsWith(pg.toLowerCase()) ? bt : `${pg} ${bt}`.trim();
+    };
+    const batchOf = new Map(regs.map((r) => [String(r.studentId), batchLabel(r)]));
+    // who sits each merged paper (for the suggested fix)
+    const groupStudents = new Map();
+    for (const c of courses) {
+      if (!groupStudents.has(c.group)) groupStudents.set(c.group, new Set());
+      for (const s of c.students) groupStudents.get(c.group).add(s);
+    }
+    const codesOf = new Map();   // group → codes
+    for (const c of courses) { if (!codesOf.has(c.group)) codesOf.set(c.group, []); codesOf.get(c.group).push(c.code); }
+    const regCodes = new Map(regs.map((r) => [String(r.studentId), new Set((r.courses || []).map(up))]));
+    const fixOptions = (sid, papers, kind) => {
+      const myBatch = batchOf.get(sid) || '';
+      const opts = papers.map((g) => {
+        const st = [...(groupStudents.get(g) || [])];
+        const same = st.filter((x) => (batchOf.get(x) || '') === myBatch).length;
+        const share = st.length ? same / st.length : 0;
+        const mine = (codesOf.get(g) || []).filter((c) => (regCodes.get(sid) || new Set()).has(c));
+        return {
+          type: 'drop', sid, code: mine[0] || (codesOf.get(g) || [g])[0], paper: g, share: Math.round(share * 100),
+          label: `Remove ${mine[0] || g} for this student only`,
+          reason: `${same} of ${st.length} students of this paper are from ${myBatch || 'this batch'}`,
+        };
+      }).sort((a, z) => a.share - z.share);
+      // the paper that is mostly another batch's is the likely registration slip
+      if (opts.length && opts[0].share <= 20 && (opts.length < 2 || opts[1].share > opts[0].share)) opts[0].recommended = true;
+      if (kind === 'same day') {
+        opts.push({ type: 'sameDay', sid, label: 'Allow two papers on this day for this student only', reason: 'Different times on the same day — no overlap', recommended: !opts.some((o) => o.recommended) });
+      }
+      return opts;
+    };
     for (const [sid, l] of perStudent) {
       const bySlot = new Map(); const byDay = new Map();
       for (const x of l) {
         const k = `${x.date}|${x.slot}`; bySlot.set(k, (bySlot.get(k) || []).concat(x.group));
         byDay.set(x.date, (byDay.get(x.date) || []).concat(x.group));
       }
-      for (const [k, g] of bySlot) if (g.length > 1) clashes.push({ sid, name: nameOf.get(sid), when: `${dispOf(k.split('|')[0])} ${k.split('|')[1]}`, papers: g, kind: 'same time' });
-      if (!allowSameDay) {
+      for (const [k, g] of bySlot) if (g.length > 1) clashes.push({ id: `${sid}|${k}`, sid, name: nameOf.get(sid), batch: batchOf.get(sid) || '', when: `${dispOf(k.split('|')[0])} ${k.split('|')[1]}`, papers: g, kind: 'same time', fixes: fixOptions(sid, g, 'same time') });
+      if (!allowSameDay && !sameDayOk.has(sid)) {
         for (const [d, g] of byDay) {
           const sameTime = [...bySlot.entries()].some(([k, x]) => k.startsWith(`${d}|`) && x.length > 1);
-          if (g.length > 1 && !sameTime) clashes.push({ sid, name: nameOf.get(sid), when: dispOf(d), papers: g, kind: 'same day' });
+          if (g.length > 1 && !sameTime) clashes.push({ id: `${sid}|${d}`, sid, name: nameOf.get(sid), batch: batchOf.get(sid) || '', when: dispOf(d), papers: g, kind: 'same day', fixes: fixOptions(sid, g, 'same day') });
         }
       }
     }
-    if (clashes.length) fail(409, `Not imported — ${clashes.length} student clash(es).`, { clashes: clashes.slice(0, 100) });
+    if (clashes.length) fail(409, `Not imported — ${clashes.length} student clash(es). Each one is listed with its fix; a fix changes only that student.`, { clashes: clashes.slice(0, 500), clashCount: clashes.length, fixesApplied: fixes.length });
+    if (checkOnly) {
+      return { ok: true, checkOnly: true, papers: new Set(courses.map((c) => c.group)).size, students: perStudent.size, days: dates.length, fixesApplied: fixes.length, dropped };
+    }
 
     // A conducted exam (e.g. the regular mid-terms) is archived first, as before any new datesheet.
     try { await require('../utils/examArchive').archiveConductedExams({ reason: 'special datesheet imported' }); }
@@ -241,6 +291,8 @@ async function importPlan({ planFile, dataFile, body = {} }) {
           importGroup: String(stamp), part: split ? pt.key : undefined, partLabel: split ? (pt.title || 'BS') : undefined,
           datasetFile: dataName, students: split ? studs.size : perStudent.size, groupStudents: perStudent.size,
           footerNote: footerNote || undefined, examRooms: examRooms.length ? examRooms : undefined,
+          // per-student fixes from the clash list (admit cards honour the 'drop' ones)
+          importFixes: fixes.length ? fixes : undefined,
           config: { examType, startDate: dates[0], semester: sem, year },
         },
         status: 'ready',

@@ -13,7 +13,7 @@ exports.listRooms = async (req, res) => {
 };
 
 exports.createRoom = async (req, res) => {
-  const { name, capacity, building, examCapacity } = req.body || {};
+  const { name, capacity, building, examCapacity, examHall, hallSeats } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Room name is required.' });
   if (!capacity || capacity < 1) return res.status(400).json({ error: 'Enter a valid capacity.' });
 
@@ -25,13 +25,20 @@ exports.createRoom = async (req, res) => {
     capacity: Number(capacity),
     building: building || '',
     examCapacity: examCapacity ? Number(examCapacity) : null,
+    examHall: !!examHall,
+    hallSeats: examHall && Number(hallSeats) > 1 ? Number(hallSeats) : null,
   });
   await logActivity('room.create', `Room added: ${room.name} (cap ${room.capacity})`, 'success');
   res.status(201).json({ room });
 };
 
 exports.updateRoom = async (req, res) => {
-  const room = await Room.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const b = { ...(req.body || {}) };
+  if ('examHall' in b) {
+    b.examHall = !!b.examHall;
+    b.hallSeats = b.examHall && Number(b.hallSeats) > 1 ? Number(b.hallSeats) : null;
+  }
+  const room = await Room.findByIdAndUpdate(req.params.id, b, { new: true, runValidators: true });
   if (!room) return res.status(404).json({ error: 'Room not found.' });
   await logActivity('room.update', `Room updated: ${room.name}`, 'info');
   res.json({ room });
