@@ -1223,6 +1223,41 @@ const FALL26_MERGES_1123 = [
   ['SS104', 'SS113', 'ENG101', 'HM1033'], ['CET122', 'CT343'], ['MT112', 'MT101'], ['CS106', 'CS114'],
   ['CS100', 'CS122', 'CS1013'], ['MT129', 'MT123', 'MT1013'], ['SU102', 'VS102', 'RT102'], ['LT103', 'SU103', 'VS101', 'RT103'],
 ];
+// These papers ARE on the datesheet, but ONLY Fall-2026 (new-intake) students sit them;
+// an older batch that registered the same code does NOT get this paper. Every B.Tech paper
+// is new-intake only too. This mirrors the curated cohort: it keeps old repeaters off these
+// parallel papers — which is exactly what would otherwise put two of their papers in one slot.
+const FALL26_NEWINTAKE_ONLY_1123 = new Set(['SS108', 'SS118', 'SS216', 'MT129', 'PSY201', 'PSY202', 'PSY203']);
+const isFall26Intake = (b) => /fall\s*-?\s*2026/i.test(b || '');
+
+// Admit cards for an imported datesheet are built from the registration file saved with it
+// (meta.datasetFile), NOT from the schedule. So we save a FILTERED copy of the report: every
+// older-batch (non-Fall-2026) student loses the new-intake-only papers (and every B.Tech
+// paper), so they are never seated for them — which is what removes the same-slot clashes.
+// New-intake students keep all their courses untouched.
+function writeNewIntakeFilteredDataset(srcPath, outPath, newIntakeOnlyCodes) {
+  const xlsx = require('xlsx');
+  const splitCourses = (s) => String(s || '').split(/,\s*(?=[A-Za-z]{2,6}[-\s]?\d{3,4}|$)/).map((p) => p.replace(/,+\s*$/, '').trim()).filter(Boolean);
+  const codeOf = (e) => { const m = String(e).match(/^([A-Za-z]{2,6}[-\s]?\d{3,4}(?:\[\d+\])?(?:-II|-I)?)/); return (m ? m[1] : String(e).split(/[\s-]/)[0]).replace(/\s/g, '').toUpperCase(); };
+  const wb = xlsx.readFile(srcPath);
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = xlsx.utils.sheet_to_json(ws, { defval: '' });
+  if (!rows.length) { fs.copyFileSync(srcPath, outPath); return { total: 0, trimmed: 0 }; }
+  const colCourses = Object.keys(rows[0]).find((k) => /courses\s*with\s*names/i.test(k)) || 'Courses with Names';
+  const colBatch = Object.keys(rows[0]).find((k) => /batch\s*intake|intake|^batch$/i.test(k)) || 'Batch Intake';
+  let trimmed = 0;
+  for (const r of rows) {
+    if (isFall26Intake(r[colBatch])) continue;              // new intake keeps every course
+    const all = splitCourses(r[colCourses]);
+    const kept = all.filter((e) => !newIntakeOnlyCodes.has(codeOf(e)));
+    if (kept.length !== all.length) { trimmed++; r[colCourses] = kept.length ? kept.join(', ') + ', ' : ''; }
+  }
+  const ws2 = xlsx.utils.json_to_sheet(rows);
+  const wb2 = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(wb2, ws2, 'Registrations');
+  xlsx.writeFile(wb2, outPath);
+  return { total: rows.length, trimmed };
+}
 
 async function fall26MidsNewReg20261123() {
   const GeneratedFile = require('../models/GeneratedFile');
@@ -1254,11 +1289,12 @@ async function fall26MidsNewReg20261123() {
     const regs = parseDataset(data).studentRegistrations || [];
     const byCode = new Map();
     for (const r of regs) for (const c of (r.courses || [])) { const k = up(c); if (!byCode.has(k)) byCode.set(k, new Set()); byCode.get(k).add(String(r.studentId)); }
-    // every paper of every sheet must still have its date — new registrations only for papers on it
-    const dsName = `Datesheet_Mids_Imported_${sheets[0].meta.importGroup || Date.now()}_registrations_20261123.xlsx`;
+    // student → batch, so the new-intake-only papers can drop older batches
+    const batchOf = new Map(); for (const r of regs) batchOf.set(String(r.studentId), r.batch || '');
+    const newIntake = (sid) => isFall26Intake(batchOf.get(String(sid)));
     if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.copyFileSync(data, path.join(OUTPUT_DIR, dsName));
-    const studs = new Set();
+    // pre-pass: load each sheet's schedule + its paper codes, and note which sheet is B.Tech
+    const loaded = [];
     for (const rec of sheets) {
       const sf = rec.meta && rec.meta.scheduleFile; if (!sf) throw new Error(`${rec.title}: no schedule file`);
       const sp = path.join(OUTPUT_DIR, path.basename(sf));
@@ -1266,19 +1302,38 @@ async function fall26MidsNewReg20261123() {
       if (!fs.existsSync(sp)) throw new Error(`${rec.title}: schedule file missing`);
       const snap = JSON.parse(fs.readFileSync(sp, 'utf-8'));
       const here = new Set((snap.courses || []).map((c) => up(c.code)));
+      const isBtech = /btech/i.test((rec.meta && rec.meta.scheduleFile) || '') || /b\.?\s*tech/i.test(rec.title || '');
+      loaded.push({ rec, snap, here, isBtech, sf });
+    }
+    // papers only Fall-2026 students sit = the listed codes + EVERY B.Tech paper
+    const newIntakeOnly = new Set(FALL26_NEWINTAKE_ONLY_1123);
+    for (const L of loaded) if (L.isBtech) for (const code of L.here) newIntakeOnly.add(code);
+
+    // the registration file saved WITH the datesheet (admit cards are built from THIS):
+    // write a FILTERED copy so older batches lose the new-intake-only papers.
+    const dsName = `Datesheet_Mids_Imported_${sheets[0].meta.importGroup || Date.now()}_registrations_20261123.xlsx`;
+    const flt = writeNewIntakeFilteredDataset(data, path.join(OUTPUT_DIR, dsName), newIntakeOnly);
+
+    const studs = new Set();
+    for (const { rec, snap, here, isBtech, sf } of loaded) {
       for (const c of snap.courses || []) {
         const k = up(c.code);
         const m = FALL26_MERGES_1123.find((g) => g.includes(k));
         if (m) c.group = m.filter((x) => here.has(x)).join('/');
-        if (byCode.has(k)) { c.students = [...byCode.get(k)]; c.students.forEach((x) => studs.add(x)); }
+        // attach the registered students, but for new-intake-only papers (and every B.Tech
+        // paper) keep ONLY Fall-2026 students — older batches don't sit these.
+        let list = byCode.has(k) ? [...byCode.get(k)] : [];
+        if (isBtech || FALL26_NEWINTAKE_ONLY_1123.has(k)) list = list.filter(newIntake);
+        c.students = list; list.forEach((x) => studs.add(x));
       }
       const stem = path.basename(rec.files[0].filename).replace(/\.[^.]+$/, '');
       const newSf = `${stem}_schedule_r20261123.json`;
       fs.writeFileSync(path.join(OUTPUT_DIR, newSf), JSON.stringify(snap));
-      rec.meta = { ...rec.meta, scheduleFile: newSf, datasetFile: dsName, regVersion: '2026-11-23', prevDatasetFile: rec.meta.datasetFile, prevScheduleFile: rec.meta.scheduleFile };
+      rec.meta = { ...rec.meta, scheduleFile: newSf, datasetFile: dsName, regVersion: '2026-11-23', prevDatasetFile: rec.meta.datasetFile, prevScheduleFile: sf };
       rec.markModified('meta');
       await rec.save();
     }
+    out.push(`filtered registrations: ${flt.trimmed} older-batch students trimmed of new-intake-only papers`);
     for (const rec of sheets) { rec.meta = { ...rec.meta, groupStudents: studs.size }; rec.markModified('meta'); await rec.save(); }
     try { await fstore.pushAll(); } catch { /* best-effort */ }
     out.push(`datesheet kept; registration file → new report (${regs.length} students); merged papers updated`);
